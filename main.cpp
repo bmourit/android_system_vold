@@ -38,6 +38,7 @@
 
 static int process_config(VolumeManager *vm);
 static void coldboot(const char *path);
+int usbmond_main(void);
 
 #define FSTAB_PREFIX "/fstab."
 struct fstab *fstab;
@@ -98,6 +99,7 @@ extern "C" int vold_main() {
 
     // Eventually we'll become the monitoring thread
     while(1) {
+        usbmond_main();
         sleep(1000);
     }
 
@@ -196,7 +198,24 @@ static int process_config(VolumeManager *vm)
         }
     }
 
-    ret = 0;
+ret = 0;
+
+//#ifdef ACT_HARDWARE
+ //   if (!(fp = fopen("/etc/usb_modeswitch.d/u3glist.txt", "r"))) {
+        // try to open file in system directory
+ //       if (!(fp = fopen("/system/etc/usb_modeswitch.d/u3glist.txt", "r"))) {
+ //           return -1;
+ //       }
+ //   }
+
+//    while(fgets(line, sizeof(line), fp)) {
+ //       int vid, pid;
+ //       if (sscanf(line, "%x_%x", &vid, &pid) == 2) {
+ //           vm->addFilterDevice(vid, pid);
+ //       }
+ //   }
+ //   fclose(fp);
+//#endif
 
 out_fail:
     return ret;

@@ -25,6 +25,11 @@
 
 #include "Volume.h"
 
+#ifdef ACT_HARDWARE
+/* The max num of 3g dongle support */
+#define MAX_U3G_NUM   1024
+#endif
+
 /* The length of an MD5 hash when encoded into ASCII hex characters */
 #define MD5_ASCII_LENGTH_PLUS_NULL ((MD5_DIGEST_LENGTH*2)+1)
 
@@ -73,8 +78,20 @@ private:
     int                    mUmsSharingCount;
     int                    mSavedDirtyRatio;
     int                    mUmsDirtyRatio;
+    int			  mSavedDirtyBackgroundRatio;
+    int			  mSavedDirtyBytes;
+    int                    mSavedDirtyBackgroundBytes;
+    int			  mDirtyBytes;
+    int 		  mDirtyBackgroundBytes;
     int                    mVolManagerDisabled;
     int                    mNextLunNumber;
+
+#ifdef ACT_HARDWARE
+    // 3g dongle sda block event
+    dev_t               mFilterKdev;
+    int                 mFilterCount;
+    int                 mFilterVidPid[MAX_U3G_NUM];
+#endif
 
 public:
     virtual ~VolumeManager();
@@ -148,6 +165,11 @@ public:
     int getNumDirectVolumes(void);
     int getDirectVolumeList(struct volume_info *vol_list);
     int unmountAllAsecsInDir(const char *directory);
+#ifdef ACT_HARDWARE
+    int getUmsSharingCount(void) { return mUmsSharingCount; }
+    int addFilterDevice(int vid, int pid);
+    bool isFilterDevice(int vid, int pid);
+#endif
 
 private:
     VolumeManager();

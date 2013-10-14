@@ -50,6 +50,16 @@
 #include "Asec.h"
 #include "cryptfs.h"
 
+#ifdef ACT_HARDWARE
+// add %d to satisfy the format string
+#define MASS_STORAGE_FILE_PATH  "/sys/class/android_usb/android0/f_mass_storage/lun%d/file"
+#define SYS_VID_PATH  "/sys/bus/usb/drivers/usb/%s/idVendor"
+#define SYS_PID_PATH  "/sys/bus/usb/drivers/usb/%s/idProduct"
+
+#define CDROM_MAJOR  11  
+#define SG_MAJOR  21  
+#define SD_MAJOR  8 
+#endif
 VolumeManager *VolumeManager::sInstance = NULL;
 
 VolumeManager *VolumeManager::Instance() {
@@ -72,6 +82,11 @@ VolumeManager::VolumeManager() {
     char dirtyratio[PROPERTY_VALUE_MAX];
     property_get("ro.vold.umsdirtyratio", dirtyratio, "0");
     mUmsDirtyRatio = atoi(dirtyratio);
+    mDirtyBytes=8388608; //8M
+    mDirtyBackgroundBytes=8388608; //8M
+    mSavedDirtyBackgroundRatio=-1;
+    mSavedDirtyBytes=-1;
+    mSavedDirtyBackgroundBytes=-1;
 }
 
 VolumeManager::~VolumeManager() {
@@ -133,12 +148,120 @@ int VolumeManager::addVolume(Volume *v) {
     return 0;
 }
 
+#ifdef ACT_HARDWARE
+int VolumeManager::addFilterDevice(int vid, int pid) {
+    if (mFilterCount < MAX_U3G_NUM - 1) {
+        mFilterVidPid[mFilterCount] = (vid << 16) | pid;
+        mFilterCount ++;
+    }
+    return 0;
+}
+
+bool VolumeManager::isFilterDevice(int vid, int pid) {    
+	const int *base = mFilterVidPid;
+    const int key = (vid << 16) | pid;
+	int lim, cmp;
+	const int *p;
+
+    /* binary search */
+	for (lim = mFilterCount; lim != 0; lim >>= 1) {
+		p = base + (lim >> 1);
+		cmp = key - *p;
+		if (cmp > 0) {	/* key > p: move right */
+			base = p + 1;
+			lim--;
+		} else if (cmp == 0) {
+		    SLOGI("Filter device found.");
+			return true;
+		} /* else move left */
+	}
+    SLOGI("Filter device not found.");
+	return false;
+}
+#endif
+
 void VolumeManager::handleBlockEvent(NetlinkEvent *evt) {
     const char *devpath = evt->findParam("DEVPATH");
+#ifdef ACT_AUDIO
+    int major = atoi(evt->findParam("MAJOR")); 
+    int minor = atoi(evt->findParam("MINOR"));
+    int action = evt->getAction();
+#endif
 
     /* Lookup a volume to handle this device */
     VolumeCollection::iterator it;
     bool hit = false;
+
+#ifdef ACT_HARDWARE
+    if (major == SD_MAJOR) {
+        if(action == NetlinkEvent::NlActionAdd) {
+            char default_vid[8];
+            char default_pid[8];
+            char bus_port[8];
+            char path[255];
+            int fd,length;
+            char *startp;
+            char *endp;
+
+            memset(bus_port, 0, sizeof(bus_port)); 
+            memset(default_vid, 0, sizeof(default_vid)); 
+            memset(default_pid, 0, sizeof(default_pid)); 
+            memset(path, 0, sizeof(path));  
+
+            endp = strchr(devpath,':');
+            (*endp) = '\0';
+            startp = strrchr(devpath,'/') + 1;
+            (*endp) = ':';
+            memcpy(bus_port, startp, (endp - startp));
+            
+            snprintf(path, 254, SYS_VID_PATH, bus_port);
+            fd = open(path, O_RDONLY);
+            if (fd < 0) {
+                SLOGE("usb modeswitch open  %s error",path);
+            } else {
+                length = read(fd, default_vid, sizeof(default_vid));
+                default_vid[length-1] = 0;
+                close(fd);
+            }
+            memset(path, 0, sizeof(path));  
+            snprintf(path, 254, SYS_PID_PATH, bus_port);
+            fd = open(path, O_RDONLY);
+            if (fd < 0) {
+                SLOGE("usb modeswitch open  %s error",path);
+            } else {
+                length = read(fd, default_pid, sizeof(default_pid));
+                default_pid[length-1] = 0;
+                close(fd);
+            }
+            
+            if ((default_vid[0] == '\0') || (default_pid[0] == '\0')) {
+                SLOGI("open vid_pid failed, ignore filter");
+                mFilterKdev = -1;
+            } else {
+                int vid, pid;
+                sscanf(default_vid, "%x", &vid);
+                sscanf(default_pid, "%x", &pid);
+                if (isFilterDevice(vid, pid)) {
+                    SLOGI("3g dongle sdx block event: vid=%s, pid=%s", default_vid, default_pid);
+                    mFilterKdev = MKDEV(major, minor);
+                } else {
+                    mFilterKdev = -1;
+                }
+            }
+        }
+    }
+
+    // ignore sg or cdrom uevent
+    if ( (major == SG_MAJOR) || (major == CDROM_MAJOR) ) {
+        return;
+    }
+
+    // ignore matched filter sd block uevent 
+    if ( mFilterKdev == MKDEV(major, minor) ) {
+        SLOGI("Ignore 3g dongle sdx block event: major=%d, minor=%d", major, minor);
+        return;
+    }
+#endif
     for (it = mVolumes->begin(); it != mVolumes->end(); ++it) {
         if (!(*it)->handleBlockEvent(evt)) {
 #ifdef NETLINK_DEBUG
