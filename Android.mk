@@ -28,7 +28,7 @@ ifneq ($(TARGET_USE_CUSTOM_SECOND_LUN_NUM),)
 common_cflags += -DCUSTOM_SECOND_LUN_NUM=$(TARGET_USE_CUSTOM_SECOND_LUN_NUM)
 endif
 
-common_cflags += -Werror
+common_cflags += -Wall
 
 common_src_files := \
 	VolumeManager.cpp \
@@ -47,7 +47,8 @@ common_src_files := \
 	Devmapper.cpp \
 	ResponseCode.cpp \
 	cryptfs.c \
-	main.cpp
+	main.cpp \
+	usbmond.cpp
 
 extra_src_files := \
 	Xwarp.cpp \
@@ -57,6 +58,7 @@ common_c_includes := \
 	$(KERNEL_HEADERS) \
 	system/extras/ext4_utils \
 	external/openssl/include \
+	external/icu4c/common \
 	external/e2fsprogs/lib \
 	system/core/fs_mgr/include \
 	system/core/logwrapper/include
@@ -94,6 +96,15 @@ include $(BUILD_EXECUTABLE)
 include $(CLEAR_VARS)
 LOCAL_SRC_FILES:= vdc.c
 LOCAL_MODULE:= vdc
+LOCAL_C_INCLUDES := $(KERNEL_HEADERS)
+LOCAL_CFLAGS := 
+LOCAL_SHARED_LIBRARIES := libcutils
+include $(BUILD_EXECUTABLE)
+
+include $(CLEAR_VARS)
+LOCAL_SRC_FILES:= udc.c
+LOCAL_MODULE_TAGS:= optional
+LOCAL_MODULE:= udc
 LOCAL_C_INCLUDES := $(KERNEL_HEADERS)
 LOCAL_CFLAGS := 
 LOCAL_SHARED_LIBRARIES := libcutils

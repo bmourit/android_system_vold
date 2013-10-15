@@ -32,7 +32,9 @@
 #include <sys/wait.h>
 
 #include <linux/kdev_t.h>
-#include <linux/fs.h>
+
+#include "unicode/ucnv.h"
+#include "unicode/ustring.h"
 
 #define LOG_TAG "Vold"
 #include <cutils/log.h>
@@ -46,7 +48,6 @@
 static char FSCK_MSDOS_PATH[] = HELPER_PATH "fsck_msdos";
 static char MKDOSFS_PATH[] = HELPER_PATH "newfs_msdos";
 static char DOSFSLABEL_PATH[] = HELPER_PATH "dosfslabel";
-extern "C" int logwrap(int argc, const char **argv, int background);
 extern "C" int mount(const char *, const char *, const char *, unsigned long, const void *);
 
 /*
@@ -168,16 +169,30 @@ int Fat::check(const char *fsPath) {
     int pass = 1;
     int rc = 0;
     do {
-        const char *args[5];
+        const char *args[4];
+        int status;
         args[0] = FSCK_MSDOS_PATH;
         args[1] = "-p";
         args[2] = "-f";
         args[3] = fsPath;
-        args[4] = NULL;
 
-        rc = logwrap(4, args, 1);
+        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status,
+                false, true);
+        if (rc != 0) {
+            SLOGE("Filesystem check failed due to logwrap error");
+            errno = EIO;
+            return -1;
+        }
 
-        switch(rc) {
+        if (!WIFEXITED(status)) {
+            SLOGE("Filesystem check did not exit properly");
+            errno = EIO;
+            return -1;
+        }
+
+        status = WEXITSTATUS(status);
+
+        switch(status) {
         case 0:
             SLOGI("Filesystem check completed OK");
             return 0;
@@ -202,7 +217,7 @@ int Fat::check(const char *fsPath) {
             return -1;
 
         default:
-            SLOGE("Filesystem check failed (unknown exit code %d)", rc);
+            SLOGE("Filesystem check failed (unknown exit code %d)", status);
             errno = EIO;
             return -1;
         }
@@ -270,8 +285,9 @@ int Fat::doMount(const char *fsPath, const char *mountPoint,
 
 int Fat::format(const char *fsPath, unsigned int numSectors) {
     int fd;
-    const char *args[13];
+    const char *args[12];
     int rc;
+    int status;
 
     args[0] = MKDOSFS_PATH;
     args[1] = "-F";
@@ -290,19 +306,33 @@ int Fat::format(const char *fsPath, unsigned int numSectors) {
         args[9] = "-s";
         args[10] = size;
         args[11] = fsPath;
-        args[12] = NULL;
-        rc = logwrap(13, args, 1);
+        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status,
+                false, true);
     } else {
         args[9] = fsPath;
-        args[10] = NULL;
-        rc = logwrap(11, args, 1);
+        rc = android_fork_execvp(8, (char **)args, &status, false,
+                true);
     }
 
-    if (rc == 0) {
+    if (rc != 0) {
+        SLOGE("Filesystem format failed due to logwrap error");
+        errno = EIO;
+        return -1;
+    }
+
+    if (!WIFEXITED(status)) {
+        SLOGE("Filesystem format did not exit properly");
+        errno = EIO;
+        return -1;
+    }
+
+    status = WEXITSTATUS(status);
+
+    if (status == 0) {
         SLOGI("Filesystem formatted OK");
         return 0;
     } else {
-        SLOGE("Format failed (unknown exit code %d)", rc);
+        SLOGE("Format failed (unknown exit code %d)", status);
         errno = EIO;
         return -1;
     }
@@ -310,30 +340,45 @@ int Fat::format(const char *fsPath, unsigned int numSectors) {
 }
 
 int Fat::setLabel(const char *fsPath, const char *label) {
-    int fd;
-    const char *args[4];
-    int rc;
-    char *utf8_lable;
-    char ansi_label[255];
-    
-    // convert utf8 to ansi
-    utf8_lable = (char*)label;
-    codec_convert("UTF-8", "GBK", utf8_lable, strlen(utf8_lable)+1, 
-                    ansi_label, sizeof(ansi_label));
-    
-    args[0] = DOSFSLABEL_PATH;
-    args[1] = fsPath;
-    args[2] = ansi_label;
-    args[3] = NULL;
-    rc = logwrap(4, args, 1);
+	int fd;
+	const char *args[3];
+	int rc;
+	int status;
+	char *utf8_lable;
+	char ansi_label[255];
 
-    if (rc == 0) {
-        SLOGI("Filesystem set label OK");
-        return 0;
-    } else {
-        SLOGE("Set label failed (unknown exit code %d)", rc);
+	// convert utf8 to ansi
+	utf8_lable = (char*)label;
+	codec_convert("UTF-8", "GBK", utf8_lable, strlen(utf8_lable)+1, 
+	                ansi_label, sizeof(ansi_label));
+
+	args[0] = DOSFSLABEL_PATH;
+	args[1] = fsPath;
+	args[2] = ansi_label;
+        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status,
+                false, true);
+
+    if (rc != 0) {
+        SLOGE("Filesystem format failed due to logwrap error");
         errno = EIO;
         return -1;
     }
+
+    if (!WIFEXITED(status)) {
+        SLOGE("Filesystem format did not exit properly");
+        errno = EIO;
+        return -1;
+    }
+
+    status = WEXITSTATUS(status);
+
+    if (status  == 0) {
+    	SLOGI("Filesystem set label OK");
+    	return 0;
+    } else {
+	SLOGE("Set label failed (unknown exit code %d)", status);
+	errno = EIO;
+	return -1;
+	}
     return 0;
 }
