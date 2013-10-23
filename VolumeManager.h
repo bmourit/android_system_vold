@@ -25,17 +25,11 @@
 
 #include "Volume.h"
 
-#ifdef ACT_HARDWARE
 /* The max num of 3g dongle support */
 #define MAX_U3G_NUM   1024
-#endif
 
 /* The length of an MD5 hash when encoded into ASCII hex characters */
 #define MD5_ASCII_LENGTH_PLUS_NULL ((MD5_DIGEST_LENGTH*2)+1)
-
-#ifndef CUSTOM_SECOND_LUN_NUM
-#define CUSTOM_SECOND_LUN_NUM 1
-#endif
 
 typedef enum { ASEC, OBB } container_type_t;
 
@@ -60,10 +54,6 @@ public:
 typedef android::List<ContainerData*> AsecIdCollection;
 
 class VolumeManager {
-
-public:
-    static const int SECOND_LUN_NUM = CUSTOM_SECOND_LUN_NUM;
-
 private:
     static VolumeManager *sInstance;
 
@@ -78,20 +68,21 @@ private:
     int                    mUmsSharingCount;
     int                    mSavedDirtyRatio;
     int                    mUmsDirtyRatio;
+    int                    mSavedDirtyExpire;
+    int                    mUmsDirtyExpire;
+    int                    mSavedDirtyWriteback;
+    int                    mUmsDirtyWriteback;
+    int                    mVolManagerDisabled;
+    //ywwang, 0315 gelaweixin patch bugfix
     int			  mSavedDirtyBackgroundRatio;
     int			  mSavedDirtyBytes;
-    int                    mSavedDirtyBackgroundBytes;
+    int                   mSavedDirtyBackgroundBytes;
     int			  mDirtyBytes;
     int 		  mDirtyBackgroundBytes;
-    int                    mVolManagerDisabled;
-    int                    mNextLunNumber;
-
-#ifdef ACT_HARDWARE
-    // 3g dongle sda block event
+    // filter dev for 3g dongle sda block event
     dev_t               mFilterKdev;
     int                 mFilterCount;
     int                 mFilterVidPid[MAX_U3G_NUM];
-#endif
 
 public:
     virtual ~VolumeManager();
@@ -165,12 +156,11 @@ public:
     int getNumDirectVolumes(void);
     int getDirectVolumeList(struct volume_info *vol_list);
     int unmountAllAsecsInDir(const char *directory);
-#ifdef ACT_HARDWARE
+
     int getUmsSharingCount(void) { return mUmsSharingCount; }
     int addFilterDevice(int vid, int pid);
     bool isFilterDevice(int vid, int pid);
-#endif
-
+    
 private:
     VolumeManager();
     void readInitialState();

@@ -32,6 +32,7 @@
 #include <sys/wait.h>
 
 #include <linux/kdev_t.h>
+#include <linux/fs.h>
 
 #include "unicode/ucnv.h"
 #include "unicode/ustring.h"

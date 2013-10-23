@@ -71,6 +71,11 @@ common_libraries := \
 	libext2_blkid \
 	liblogwrap
 
+common_act := \
+	libicuuc \
+	libbinder \
+	libutils
+
 common_static_libraries := \
 	libfs_mgr \
 	libpower
@@ -79,7 +84,7 @@ include $(CLEAR_VARS)
 LOCAL_MODULE := libvold
 LOCAL_SRC_FILES := $(common_src_files) $(extra_src_files)
 LOCAL_C_INCLUDES := $(common_c_includes)
-LOCAL_SHARED_LIBRARIES := $(common_libraries) libcrypto
+LOCAL_SHARED_LIBRARIES := $(common_libraries) $(common_act) libcrypto
 LOCAL_CFLAGS := $(common_cflags)
 LOCAL_MODULE_TAGS := eng tests
 include $(BUILD_STATIC_LIBRARY)
@@ -89,7 +94,7 @@ LOCAL_MODULE:= vold
 LOCAL_SRC_FILES := vold.c
 LOCAL_C_INCLUDES := $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags)
-LOCAL_SHARED_LIBRARIES := $(common_libraries) libcrypto
+LOCAL_SHARED_LIBRARIES := $(common_libraries) $(common_act) libcrypto
 LOCAL_STATIC_LIBRARIES := libvold $(common_static_libraries)
 include $(BUILD_EXECUTABLE)
 
@@ -125,7 +130,7 @@ LOCAL_C_INCLUDES := $(common_c_includes)
 LOCAL_CFLAGS := $(common_cflags) -DMINIVOLD
 LOCAL_STATIC_LIBRARIES := libminivold
 LOCAL_STATIC_LIBRARIES += libc libstdc++
-LOCAL_STATIC_LIBRARIES += $(common_libraries) $(common_static_libraries)
+LOCAL_STATIC_LIBRARIES += $(common_libraries) $(common_act) $(common_static_libraries)
 LOCAL_STATIC_LIBRARIES += libcrypto_static libext2_uuid
 LOCAL_FORCE_STATIC_EXECUTABLE := true
 LOCAL_MODULE_CLASS := RECOVERY_EXECUTABLES

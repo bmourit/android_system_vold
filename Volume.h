@@ -26,6 +26,7 @@ class VolumeManager;
 class Volume {
 private:
     int mState;
+	int mRetry;
 
 public:
 #endif
@@ -48,7 +49,6 @@ public:
     static const char *ASECDIR;
 
     static const char *LOOPDIR;
-    static const char *FUSEDIR;
 
 #ifdef __cplusplus
 protected:
@@ -59,7 +59,6 @@ protected:
     int mPartIdx;
     int mOrigPartIdx;
     bool mRetryMount;
-    int mLunNumber;
 
     /*
      * The major/minor tuple of the currently mounted filesystem.
@@ -77,10 +76,9 @@ public:
     const char *getLabel() { return mLabel; }
     const char *getMountpoint() { return mMountpoint; }
     int getState() { return mState; }
-    bool isPrimaryStorage();
 
-    int getLunNumber() { return mLunNumber; }
-    void setLunNumber(int lunNumber);
+    bool isPrimaryStorage();
+    bool isAsecStorage();
 
     virtual int handleBlockEvent(NetlinkEvent *evt);
     virtual dev_t getDiskDevice();
@@ -91,11 +89,10 @@ public:
     void setDebug(bool enable);
     virtual int getVolInfo(struct volume_info *v) = 0;
 
-    virtual int getDeviceNodes(dev_t *devs, int max) = 0;
-
 protected:
     void setState(int state);
 
+    virtual int getDeviceNodes(dev_t *devs, int max) = 0;
     virtual int updateDeviceInfo(char *new_path, int new_major, int new_minor) = 0;
     virtual void revertDeviceInfo(void) = 0;
     virtual int isDecrypted(void) = 0;
@@ -109,7 +106,6 @@ private:
     int createBindMounts();
     int doUnmount(const char *path, bool force);
     int doMoveMount(const char *src, const char *dst, bool force);
-    int doFuseMount(const char *src, const char *dst);
     void protectFromAutorunStupidity();
 };
 
@@ -117,7 +113,7 @@ typedef android::List<Volume *> VolumeCollection;
 
 extern "C" {
 #endif
-    const char *stateToStr(int state);
+    //const char *stateToStr(int state);
 #ifdef __cplusplus
 };
 #endif

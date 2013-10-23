@@ -40,7 +40,7 @@ protected:
     int            mOrigDiskMinor;
     int            mOrigPartMinors[MAX_PARTITIONS];
     int            mDiskNumParts;
-    unsigned int   mPendingPartMap;
+    unsigned char  mPendingPartMap;
     int            mIsDecrypted;
     int            mFlags;
 
@@ -87,6 +87,7 @@ private:
 #ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
     int getMajorNumberForBadPartition(int part_num);
 #endif
+    int astrncmp(const char *s1, const char *s2, size_t n);
 
 };
 

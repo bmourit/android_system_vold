@@ -43,59 +43,69 @@
 #include "Ntfs.h"
 #include "VoldUtil.h"
 
-static char NTFS_FIX_PATH[] = HELPER_PATH "ntfsfix";
+#define NTFS_SUPER_MAGIC 0x5346544e
+static char FSCK_NTFS_PATH[] = HELPER_PATH "fsck_ntfs";
 static char NTFS_MOUNT_PATH[] = HELPER_PATH "ntfs-3g";
 static char MKNTFS_PATH[] = HELPER_PATH "mkntfs";
+extern "C" int mount(const char *, const char *, const char *, unsigned long, const void *);
 
+int Ntfs::identify(const char *fsPath) {
+    int rc = -1;
+    int fd;
+    char *devpath;
+    int s_magic = 0;
+
+    if ((fd = open(fsPath, O_RDWR)) < 0) {
+        SLOGE("Unable to open device '%s' (%s)", fsPath,
+             strerror(errno));
+        return -1;
+    }
+
+    if (lseek(fd, 3, SEEK_SET) < 0) {
+        SLOGE("Unable to lseek to get superblock (%s)", strerror(errno));
+        rc =  -1;
+        goto out;
+    }
+
+    if (read(fd, &s_magic, sizeof(s_magic)) != sizeof(s_magic)) {
+        SLOGE("Unable to read superblock (%s)", strerror(errno));
+        rc =  -1;
+        goto out;
+    }
+
+    if (s_magic == NTFS_SUPER_MAGIC) {
+        rc = 0;
+		SLOGI("Ntfs System(%s) Identify success.", fsPath);
+    } else
+        rc = -1;
+out:
+    close(fd);
+    return rc;
+}
+
+/* Current We don't support Ntfs Check support */
 int Ntfs::check(const char *fsPath) {
-
-    if (access(NTFS_FIX_PATH, X_OK)) {
-        SLOGW("Skipping fs checks\n");
+    bool rw = true;
+    if (access(FSCK_NTFS_PATH, X_OK)) {
+        SLOGW("Skipping ntfs checks\n");
         return 0;
     }
 
-    int rc = 0;
-    int status;
-    const char *args[4];
-    /* we first use -n to do ntfs detection */
-    args[0] = NTFS_FIX_PATH;
-    args[1] = "-n";
-    args[2] = fsPath;
-    args[3] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-    if (rc) {
-        errno = ENODATA;
-        return -1;
-    }
-
-    SLOGI("Ntfs filesystem existed");
-
-    /* do the real fix */
-    /* redo the ntfsfix without -n to fix problems */
-    args[1] = fsPath;
-    args[2] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-    if (rc) {
-        errno = EIO;
-        SLOGE("Filesystem check failed (unknown exit code %d)", rc);
-        return -1;
-    }
-
-    SLOGI("Ntfs filesystem check completed OK");
     return 0;
 }
 
 int Ntfs::doMount(const char *fsPath, const char *mountPoint,
-                 bool ro, bool remount, bool executable,
+                 bool ro, bool remount, bool executable, 
                  int ownerUid, int ownerGid, int permMask, bool createLost) {
     int rc;
+    unsigned long flags;
     char mountData[255];
-    const char *args[6];
-    int status;
+
+    flags = MS_NODEV | MS_NOSUID | MS_DIRSYNC | MS_NOATIME | MS_NODIRATIME;
+
+    flags |= (executable ? 0 : MS_NOEXEC);
+    flags |= (ro ? MS_RDONLY : 0);
+    flags |= (remount ? MS_REMOUNT : 0);
 
     /*
      * Note: This is a temporary hack. If the sampling profiler is enabled,
@@ -110,37 +120,17 @@ int Ntfs::doMount(const char *fsPath, const char *mountPoint,
             " 'persist.sampling_profiler' system property is set to '1'.");
         permMask = 0;
     }
-
+    /* FIXME force to world-writable */
     sprintf(mountData,
-            "utf8,uid=%d,gid=%d,fmask=%o,dmask=%o,"
-	    "shortname=mixed,nodev,nosuid,dirsync",
+            "nls=utf8,uid=%d,gid=%d,fmask=%o,dmask=%o",
             ownerUid, ownerGid, permMask, permMask);
 
-    if (!executable)
-        strcat(mountData, ",noexec");
-    if (ro)
-        strcat(mountData, ",ro");
-    if (remount)
-        strcat(mountData, ",remount");
-
-    SLOGD("Mounting ntfs with options:%s\n", mountData);
-
-    args[0] = NTFS_MOUNT_PATH;
-    args[1] = "-o";
-    args[2] = mountData;
-    args[3] = fsPath;
-    args[4] = mountPoint;
-    args[5] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
+    rc = mount(fsPath, mountPoint, "ntfs", flags, mountData);
 
     if (rc && errno == EROFS) {
         SLOGE("%s appears to be a read only filesystem - retrying mount RO", fsPath);
-        strcat(mountData, ",ro");
-        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-
+        flags |= MS_RDONLY;
+        rc = mount(fsPath, mountPoint, "ntfs", flags, mountData);
     }
 
     if (rc == 0 && createLost) {
@@ -161,34 +151,7 @@ int Ntfs::doMount(const char *fsPath, const char *mountPoint,
     return rc;
 }
 
-int Ntfs::format(const char *fsPath) {
-
-    int fd;
-    const char *args[4];
-    int rc = -1;
-    int status;
-
-    if (access(MKNTFS_PATH, X_OK)) {
-        SLOGE("Unable to format, mkntfs not found.");
-        return -1;
-    }
-
-    args[0] = MKNTFS_PATH;
-    args[1] = "-f";
-    args[2] = fsPath;
-    args[3] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-
-    if (rc == 0) {
-        SLOGI("Filesystem (NTFS) formatted OK");
-        return 0;
-    } else {
-        SLOGE("Format (NTFS) failed (unknown exit code %d)", rc);
-        errno = EIO;
-        return -1;
-    }
-    return 0;
+/* Don't Support NTFS Format */
+int Ntfs::format(const char *fsPath, unsigned int numSectors) {
+    return -1;
 }
-

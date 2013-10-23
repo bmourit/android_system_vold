@@ -46,121 +46,97 @@ static char EXFAT_FSCK[] = HELPER_PATH "fsck.exfat";
 static char EXFAT_MKFS[] = HELPER_PATH "mkfs.exfat";
 static char EXFAT_MOUNT[] = HELPER_PATH "mount.exfat";
 
-int Exfat::doMount(const char *fsPath, const char *mountPoint,
-                 bool ro, bool remount, bool executable,
-                 int ownerUid, int ownerGid, int permMask) {
+int Exfat::identify(const char *fsPath) {
+    int i, rc =-1, cnt = 0, fd = 0;
+	unsigned char *block = NULL;
 
-    int rc = -1;
-    char mountData[255];
-    const char *args[6];
-    int status;
-
-    if (access(EXFAT_MOUNT, X_OK)) {
-        SLOGE("Unable to mount, exFAT FUSE helper not found!");
-        return rc;
+    if(!(block = (unsigned char *)malloc(512))){
+        goto out;
+    }
+    if((fd = open(fsPath, O_RDONLY)) < 0)
+    {
+        SLOGE("Unable to open device '%s' (%s)", fsPath, strerror(errno));
+        goto out;
+    }
+    if((cnt = read(fd, block, 512)) != 512)
+	{
+        SLOGE("Unable to read device partition table (%d, %s)", cnt, strerror(errno));
+        goto out;
     }
 
+	if (memcmp(block+3, EXFAT_OEM_ID, 8)) {
+		SLOGI("exfat identify fail");
+		goto out;
+	}
+	SLOGI("Exfat System(%s) Identify success.", fsPath);
+	rc = 0;
+
+out:
+    if(block)
+	    free(block);
+	if(fd >= 0)
+		close(fd);
+    return rc;
+}
+
+int Exfat::doMount(const char *fsPath, const char *mountPoint,
+                 bool ro, bool remount, bool executable, 
+                 int ownerUid, int ownerGid, int permMask, bool createLost) {
+    int rc;
+    unsigned long flags;
+    char mountData[255];
+
+    flags = MS_NODEV | MS_NOSUID | MS_DIRSYNC | MS_NOATIME | MS_NODIRATIME;
+
+    flags |= (executable ? 0 : MS_NOEXEC);
+    flags |= (ro ? MS_RDONLY : 0);
+    flags |= (remount ? MS_REMOUNT : 0);
+
+    /*
+     * Note: This is a temporary hack. If the sampling profiler is enabled,
+     * we make the SD card world-writable so any process can write snapshots.
+     *
+     * TODO: Remove this code once we have a drop box in system_server.
+     */
+    char value[PROPERTY_VALUE_MAX];
+    property_get("persist.sampling_profiler", value, "");
+    if (value[0] == '1') {
+        SLOGW("The SD card is world-writable because the"
+            " 'persist.sampling_profiler' system property is set to '1'.");
+        permMask = 0;
+    }
+    /* FIXME force to world-writable */
     sprintf(mountData,
-            "noatime,nodev,nosuid,dirsync,uid=%d,gid=%d,fmask=%o,dmask=%o,%s,%s",
-            ownerUid, ownerGid, permMask, permMask,
-            (executable ? "exec" : "noexec"),
-            (ro ? "ro" : "rw"));
+            "uid=%d,gid=%d,fmask=%o,dmask=%o",
+            ownerUid, ownerGid, permMask, permMask);
 
-    args[0] = EXFAT_MOUNT;
-    args[1] = "-o";
-    args[2] = mountData;
-    args[3] = fsPath;
-    args[4] = mountPoint;
-    args[5] = NULL;
-
-    SLOGW("Executing exFAT mount (%s) -> (%s)", fsPath, mountPoint);
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
+    rc = mount(fsPath, mountPoint, "exfat", flags, mountData);
 
     if (rc && errno == EROFS) {
         SLOGE("%s appears to be a read only filesystem - retrying mount RO", fsPath);
-        strcat(mountData, ",ro");
-        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
+        flags |= MS_RDONLY;
+        rc = mount(fsPath, mountPoint, "exfat", flags, mountData);
+    }
+
+    if (rc == 0 && createLost) {
+        char *lost_path;
+        asprintf(&lost_path, "%s/LOST.DIR", mountPoint);
+        if (access(lost_path, F_OK)) {
+            /*
+             * Create a LOST.DIR in the root so we have somewhere to put
+             * lost cluster chains (fsck_msdos doesn't currently do this)
+             */
+            if (mkdir(lost_path, 0755)) {
+                SLOGE("Unable to create LOST.DIR (%s)", strerror(errno));
+            }
+        }
+        free(lost_path);
     }
 
     return rc;
 }
 
-int Exfat::check(const char *fsPath) {
-
-    bool rw = true;
-    int rc = -1;
-    int status;
-
-    if (access(EXFAT_FSCK, X_OK)) {
-        SLOGW("Skipping fs checks, exfatfsck not found.\n");
-        return 0;
-    }
-
-    do {
-        const char *args[3];
-        args[0] = EXFAT_FSCK;
-        args[1] = fsPath;
-        args[2] = NULL;
-
-        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-
-        switch(rc) {
-        case 0:
-            SLOGI("exFAT filesystem check completed OK.\n");
-            return 0;
-        case 1:
-            SLOGI("exFAT filesystem check completed, errors corrected OK.\n");
-            return 0;
-        case 2:
-            SLOGE("exFAT filesystem check completed, errors corrected, need reboot.\n");
-            return 0;
-        case 4:
-            SLOGE("exFAT filesystem errors left uncorrected.\n");
-            return 0;
-        case 8:
-            SLOGE("exfatfsck operational error.\n");
-            errno = EIO;
-            return -1;
-        default:
-            SLOGE("exFAT filesystem check failed (unknown exit code %d).\n", rc);
-            errno = EIO;
-            return -1;
-        }
-    } while (0);
-
-    return 0;
-}
-
-int Exfat::format(const char *fsPath) {
-
-    int fd;
-    const char *args[3];
-    int rc = -1;
-    int status;
-
-    if (access(EXFAT_MKFS, X_OK)) {
-        SLOGE("Unable to format, mkexfatfs not found.");
-        return -1;
-    }
-
-    args[0] = EXFAT_MKFS;
-    args[1] = fsPath;
-    args[2] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-
-    if (rc == 0) {
-        SLOGI("Filesystem (exFAT) formatted OK");
-        return 0;
-    } else {
-        SLOGE("Format (exFAT) failed (unknown exit code %d)", rc);
-        errno = EIO;
-        return -1;
-    }
-    return 0;
+/* Don't Support Format */
+int Exfat::format(const char *fsPath, unsigned int numSectors) {
+    return -1;
 }

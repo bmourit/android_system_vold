@@ -75,13 +75,16 @@ VolumeManager::VolumeManager() {
     mBroadcaster = NULL;
     mUmsSharingCount = 0;
     mSavedDirtyRatio = -1;
+    mSavedDirtyExpire = -1;
+    mSavedDirtyWriteback = -1;
+    // set dirty ratio to 5 when UMS is active
+    mUmsDirtyRatio = 5;
+    mUmsDirtyExpire = 1;
+    mUmsDirtyWriteback = 20;
     mVolManagerDisabled = 0;
-    mNextLunNumber = 0;
-
-    // set dirty ratio to ro.vold.umsdirtyratio (default 0) when UMS is active
-    char dirtyratio[PROPERTY_VALUE_MAX];
-    property_get("ro.vold.umsdirtyratio", dirtyratio, "0");
-    mUmsDirtyRatio = atoi(dirtyratio);
+    mFilterKdev = -1;
+    mFilterCount = 0;
+    //ywwang: bugfix for xxx
     mDirtyBytes=8388608; //8M
     mDirtyBackgroundBytes=8388608; //8M
     mSavedDirtyBackgroundRatio=-1;
@@ -143,7 +146,6 @@ int VolumeManager::stop() {
 }
 
 int VolumeManager::addVolume(Volume *v) {
-    v->setLunNumber(mNextLunNumber++);
     mVolumes->push_back(v);
     return 0;
 }
@@ -554,6 +556,8 @@ int VolumeManager::createAsec(const char *id, unsigned int numSectors, const cha
             return -1;
         }
 
+        //char mountPoint[255];
+        //snprintf(mountPoint, sizeof(mountPoint), "%s/%s", Volume::ASECDIR, id);
         if (mkdir(mountPoint, 0000)) {
             if (errno != EEXIST) {
                 SLOGE("Mountpoint creation failed (%s)", strerror(errno));
@@ -1034,8 +1038,7 @@ int VolumeManager::findAsec(const char *id, char *asecPath, size_t asecPathLen,
 
     if (asecPath != NULL) {
         int written = snprintf(asecPath, asecPathLen, "%s/%s", dir, asecName);
-        if ((written < 0) || (size_t(written) >= asecPathLen)) {
-            SLOGE("findAsec failed for %s: couldn't construct ASEC path", id);
+        if (written < 0 || static_cast<size_t>(written) >= asecPathLen) {
             free(asecName);
             return -1;
         }
@@ -1374,34 +1377,14 @@ int VolumeManager::shareEnabled(const char *label, const char *method, bool *ena
     return 0;
 }
 
-static const char *LUN_FILES[] = {
-#ifdef CUSTOM_LUN_FILE
-    CUSTOM_LUN_FILE,
-#endif
-    /* Only andriod0 exists, but the %d in there is a hack to satisfy the
-       format string and also give a not found error when %d > 0 */
-    "/sys/class/android_usb/android%d/f_mass_storage/lun/file",
-    NULL
-};
-
-int VolumeManager::openLun(int number) {
-    const char **iterator = LUN_FILES;
+int VolumeManager::openLun(int num)
+{
     char qualified_lun[255];
-    while (*iterator) {
-        bzero(qualified_lun, 255);
-        snprintf(qualified_lun, 254, *iterator, number);
-        int fd = open(qualified_lun, O_WRONLY);
-        if (fd >= 0) {
-            SLOGD("Opened lunfile %s", qualified_lun);
-            return fd;
-        }
-        SLOGE("Unable to open ums lunfile %s (%s)", qualified_lun, strerror(errno));
-        iterator++;
-    }
 
-    errno = EINVAL;
-    SLOGE("Unable to find ums lunfile for LUN %d", number);
-    return -1;
+    bzero(qualified_lun, 255);
+    snprintf(qualified_lun, 254, MASS_STORAGE_FILE_PATH, num);
+
+    return open(qualified_lun, O_WRONLY);
 }
 
 int VolumeManager::shareVolume(const char *label, const char *method) {
@@ -1428,7 +1411,7 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
     }
 
     if (v->getState() != Volume::State_Idle) {
-        // You need to unmount manually before sharing
+        // You need to unmount manually befoe sharing
         errno = EBUSY;
         return -1;
     }
@@ -1445,33 +1428,23 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
         return -1;
     }
 
-#ifdef VOLD_EMMC_SHARES_DEV_MAJOR
-    // If emmc and sdcard share dev major number, vold may pick
-    // incorrectly based on partition nodes alone. Use device nodes instead.
-    v->getDeviceNodes((dev_t *) &d, 1);
-    if ((MAJOR(d) == 0) && (MINOR(d) == 0)) {
-        // This volume does not support raw disk access
-        errno = EINVAL;
-        return -1;
-    }
-#endif
-
-    int fd, lun_number;
+    int fd;
     char nodepath[255];
     int written = snprintf(nodepath,
              sizeof(nodepath), "/dev/block/vold/%d:%d",
              MAJOR(d), MINOR(d));
 
-    if ((written < 0) || (size_t(written) >= sizeof(nodepath))) {
-        SLOGE("shareVolume failed: couldn't construct nodepath");
-        return -1;
+    //  TODO: Currently only two mounts are supported, defaulting
+    // /mnt/sdcard to lun0 and anything else to lun1. Fix this.
+    int lun_number;
+    if (v->isPrimaryStorage()) {
+        lun_number = 0;
+    } else {
+        lun_number = 1;
     }
-
-    if ((lun_number = v->getLunNumber()) == -1) {
-        return -1;
-    }
-
+    
     if ((fd = openLun(lun_number)) < 0) {
+        SLOGE("Unable to open ums lunfile (%s)", strerror(errno));
         return -1;
     }
 
@@ -1485,17 +1458,79 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
     v->handleVolumeShared();
     if (mUmsSharingCount++ == 0) {
         FILE* fp;
-        mSavedDirtyRatio = -1; // in case we fail
-        if ((fp = fopen("/proc/sys/vm/dirty_ratio", "r+"))) {
+        //ywwang: save four vm configurations that restored in unShareVolume
+	mSavedDirtyRatio = -1; // in case we fail
+	if ((fp = fopen("/proc/sys/vm/dirty_ratio", "r+"))) {
+			char line[16];
+			if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyRatio)) {
+		} else {
+			SLOGE("Failed to read dirty_ratio (%s)", strerror(errno));
+		}
+		fclose(fp);
+	} else {
+		SLOGE("Failed to open /proc/sys/vm/dirty_ratio (%s)", strerror(errno));
+	}
+
+	mSavedDirtyBackgroundRatio=-1; // in case we fail
+	if ((fp = fopen("/proc/sys/vm/dirty_background_ratio", "r+"))) {
+		char line[16];
+		if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyBackgroundRatio)) {
+		} else {
+			SLOGE("Failed to read dirty_background_ratio (%s)", strerror(errno));
+		}
+		fclose(fp);
+	} else {
+		SLOGE("Failed to open /proc/sys/vm/dirty_background_ratio (%s)", strerror(errno));
+	}
+           
+	mSavedDirtyBytes=-1; // in case we fail
+	if ((fp = fopen("/proc/sys/vm/dirty_bytes", "r+"))) {
+		char line[16];
+		if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyBytes)) {
+			fprintf(fp, "%d\n", mDirtyBytes);
+		} else {
+		    SLOGE("Failed to read dirty_bytes (%s)", strerror(errno));
+		}
+		fclose(fp);
+	} else {
+		SLOGE("Failed to open /proc/sys/vm/dirty_bytes (%s)", strerror(errno));
+	}
+        
+	mSavedDirtyBackgroundBytes=-1; // in case we fail
+	if ((fp = fopen("/proc/sys/vm/dirty_background_bytes", "r+"))) {
+		char line[16];
+		if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyBackgroundBytes)) {
+			fprintf(fp, "%d\n", mDirtyBackgroundBytes);
+		} else {
+	  		SLOGE("Failed to read dirty_background_bytes (%s)", strerror(errno));
+		}
+		fclose(fp);
+	} else {
+		SLOGE("Failed to open /proc/sys/vm/dirty_background_bytes (%s)", strerror(errno));
+	}
+        mSavedDirtyExpire = -1; // in case we fail
+        if ((fp = fopen("/proc/sys/vm/dirty_expire_centisecs", "r+"))) {
             char line[16];
-            if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyRatio)) {
-                fprintf(fp, "%d\n", mUmsDirtyRatio);
+            if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyExpire)) {
+                fprintf(fp, "%d\n", mUmsDirtyExpire);
             } else {
-                SLOGE("Failed to read dirty_ratio (%s)", strerror(errno));
+                SLOGE("Failed to read dirty_expire_centisecs (%s)", strerror(errno));
             }
             fclose(fp);
         } else {
-            SLOGE("Failed to open /proc/sys/vm/dirty_ratio (%s)", strerror(errno));
+            SLOGE("Failed to open /proc/sys/vm/dirty_expire_centisecs (%s)", strerror(errno));
+        }
+        mSavedDirtyWriteback = -1; // in case we fail
+        if ((fp = fopen("/proc/sys/vm/dirty_writeback_centisecs", "r+"))) {
+            char line[16];
+            if (fgets(line, sizeof(line), fp) && sscanf(line, "%d", &mSavedDirtyWriteback)) {
+                fprintf(fp, "%d\n", mUmsDirtyWriteback);
+            } else {
+                SLOGE("Failed to read dirty_writeback_centisecs (%s)", strerror(errno));
+            }
+            fclose(fp);
+        } else {
+            SLOGE("Failed to open /proc/sys/vm/dirty_writeback_centisecs (%s)", strerror(errno));
         }
     }
     return 0;
@@ -1519,26 +1554,31 @@ int VolumeManager::unshareVolume(const char *label, const char *method) {
         return -1;
     }
 
-    int fd, lun_number;
-
-    if ((lun_number = v->getLunNumber()) == -1) {
-        return -1;
+    //  TODO: Currently only two mounts are supported, defaulting
+    // /mnt/sdcard to lun0 and anything else to lun1. Fix this.
+    int lun_number;
+    if (v->isPrimaryStorage()) {
+        lun_number = 0;
+    } else {
+        lun_number = 1;
     }
 
+    int fd;
     if ((fd = openLun(lun_number)) < 0) {
-        return -1;
-    }
-
-    char ch = 0;
-    if (write(fd, &ch, 1) < 0) {
-        SLOGE("Unable to write to ums lunfile (%s)", strerror(errno));
+        SLOGE("Unable to open ums lunfile (%s)", strerror(errno));
+        // if lun file not exist, usb line had been plulled out, just keep going.
+    } else {
+        char ch = 0;
+        if (write(fd, &ch, 1) < 0) {
+            SLOGE("Unable to write to ums lunfile (%s)", strerror(errno));
+            // if lun file not exist, usb line had been plulled out, just keep going.
+        }
         close(fd);
-        return -1;
     }
 
-    close(fd);
     v->handleVolumeUnshared();
-    if (--mUmsSharingCount == 0 && mSavedDirtyRatio != -1) {
+    mUmsSharingCount--;
+    if (mUmsSharingCount == 0 && mSavedDirtyRatio != -1) {
         FILE* fp;
         if ((fp = fopen("/proc/sys/vm/dirty_ratio", "r+"))) {
             fprintf(fp, "%d\n", mSavedDirtyRatio);
@@ -1547,6 +1587,68 @@ int VolumeManager::unshareVolume(const char *label, const char *method) {
             SLOGE("Failed to open /proc/sys/vm/dirty_ratio (%s)", strerror(errno));
         }
         mSavedDirtyRatio = -1;
+    }
+    if (mUmsSharingCount == 0 && mSavedDirtyExpire != -1) {
+        FILE* fp;
+        if ((fp = fopen("/proc/sys/vm/dirty_expire_centisecs", "r+"))) {
+            fprintf(fp, "%d\n", mSavedDirtyExpire);
+            fclose(fp);
+        } else {
+            SLOGE("Failed to open /proc/sys/vm/dirty_expire_centisecs (%s)", strerror(errno));
+        }
+        mSavedDirtyExpire = -1;
+    }
+    if (mUmsSharingCount == 0 && mSavedDirtyWriteback != -1) {
+        FILE* fp;
+        if ((fp = fopen("/proc/sys/vm/dirty_writeback_centisecs", "r+"))) {
+            fprintf(fp, "%d\n", mSavedDirtyWriteback);
+            fclose(fp);
+        } else {
+            SLOGE("Failed to open /proc/sys/vm/dirty_writeback_centisecs (%s)", strerror(errno));
+        }
+        mSavedDirtyWriteback = -1;
+    }
+	
+        //ywwang:
+        if (mUmsSharingCount == 0 && mSavedDirtyRatio != -1) {
+        FILE* fp;
+        if ((fp = fopen("/proc/sys/vm/dirty_ratio", "r+"))) {
+            fprintf(fp, "%d\n", mSavedDirtyRatio);
+            fclose(fp);
+        } else {
+            SLOGE("Failed to open /proc/sys/vm/dirty_ratio (%s)", strerror(errno));
+        }
+        mSavedDirtyRatio = -1;
+    }
+	if (mUmsSharingCount == 0 && mSavedDirtyBackgroundRatio != -1) {
+		FILE* fp;
+		if ((fp = fopen("/proc/sys/vm/dirty_background_ratio", "r+"))) {
+			fprintf(fp, "%d\n", mSavedDirtyBackgroundRatio);
+			fclose(fp);
+		} else {
+			SLOGE("Failed to open /proc/sys/vm/dirty_background_ratio (%s)", strerror(errno));
+		}
+		mSavedDirtyBackgroundRatio = -1;
+	}
+	if (mUmsSharingCount == 0 && mSavedDirtyBytes != -1 && mSavedDirtyBytes!=0) {
+		FILE* fp;
+		if ((fp = fopen("/proc/sys/vm/dirty_bytes", "r+"))) {
+		    fprintf(fp, "%d\n", mSavedDirtyBytes);
+		    fclose(fp);
+		} else {
+		    SLOGE("Failed to open /proc/sys/vm/dirty_bytes (%s)", strerror(errno));
+		}
+		mSavedDirtyBytes = -1;
+	}
+	if (mUmsSharingCount == 0 && mSavedDirtyBackgroundBytes != -1 &&mSavedDirtyBackgroundBytes!=0 ) {
+		FILE* fp;
+		if ((fp = fopen("/proc/sys/vm/dirty_background_bytes", "r+"))) {
+		  fprintf(fp, "%d\n", mSavedDirtyBackgroundBytes);
+		  fclose(fp);
+		} else {
+		  SLOGE("Failed to open /proc/sys/vm/dirty_background_bytes (%s)", strerror(errno));
+		}
+		mSavedDirtyBackgroundBytes = -1;
     }
     return 0;
 }
@@ -1646,7 +1748,7 @@ int VolumeManager::unmountAllAsecsInDir(const char *directory) {
     }
 
     size_t dirent_len = offsetof(struct dirent, d_name) +
-            fpathconf(dirfd(d), _PC_NAME_MAX) + 1;
+            pathconf(directory, _PC_NAME_MAX) + 1;
 
     struct dirent *dent = (struct dirent *) malloc(dirent_len);
     if (dent == NULL) {
@@ -1723,11 +1825,11 @@ bool VolumeManager::isMountpointMounted(const char *mp)
 }
 
 int VolumeManager::cleanupAsec(Volume *v, bool force) {
-    /* Only EXTERNAL_STORAGE needs ASEC cleanup. */
+       /* Only primary storage needs ASEC cleanup. */
     if (!v->isPrimaryStorage())
         return 0;
 
-    int rc = unmountAllAsecsInDir(Volume::SEC_ASECDIR_EXT);
+     int rc = unmountAllAsecsInDir(Volume::SEC_ASECDIR_EXT);
 
     AsecIdCollection toUnmount;
     // Find the remaining OBB files that are on external storage.
