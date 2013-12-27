@@ -22,11 +22,7 @@
 #include "Volume.h"
 
 #ifndef VOLD_MAX_PARTITIONS
-#ifdef ACT_HARDWARE
-#define VOLD_MAX_PARTITIONS 16
-#else
-#define VOLD_MAX_PARTITIONS 4
-#endif
+#define VOLD_MAX_PARTITIONS 32
 #endif
 
 typedef android::List<char *> PathCollection;
@@ -34,6 +30,7 @@ typedef android::List<char *> PathCollection;
 class DirectVolume : public Volume {
 public:
     static const int MAX_PARTITIONS = VOLD_MAX_PARTITIONS;
+
 protected:
     const char* mMountpoint;
     const char* mFuseMountpoint;
@@ -48,7 +45,6 @@ protected:
     int            mDiskNumParts;
     unsigned int   mPendingPartMap;
     int            mIsDecrypted;
-    int            mFlags;
 
 #ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
 private:
@@ -81,7 +77,6 @@ protected:
     int updateDeviceInfo(char *new_path, int new_major, int new_minor);
     virtual void revertDeviceInfo(void);
     int isDecrypted() { return mIsDecrypted; }
-    int getFlags() { return mFlags; }
 
 private:
     void handleDiskAdded(const char *devpath, NetlinkEvent *evt);
@@ -92,15 +87,13 @@ private:
     void handlePartitionChanged(const char *devpath, NetlinkEvent *evt);
 
     int doMountVfat(const char *deviceNode, const char *mountPoint);
-
-#ifdef ACT_HARDWARE
-    int astrncmp(const char *s1, const char *s2, size_t n);
-#endif
-
 #ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
     int getMajorNumberForBadPartition(int part_num);
 #endif
 
+#ifdef ACT_HARDWARE
+    int astrncmp(const char *s1, const char *s2, size_t n);
+#endif
 };
 
 typedef android::List<DirectVolume *> DirectVolumeCollection;

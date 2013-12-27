@@ -42,21 +42,6 @@ private:
         int runCommand(SocketClient *c, int argc, char ** argv);
     };
 
-    class StorageCmd : public VoldCommand {
-    public:
-        StorageCmd();
-        virtual ~StorageCmd() {}
-        int runCommand(SocketClient *c, int argc, char ** argv);
-    };
-
-    class CryptfsCmd : public VoldCommand {
-    public:
-        CryptfsCmd();
-        virtual ~CryptfsCmd() {}
-        int runCommand(SocketClient *c, int argc, char ** argv);
-    };
-
-#ifndef MINIVOLD
     class AsecCmd : public VoldCommand {
     public:
         AsecCmd();
@@ -73,10 +58,24 @@ private:
         int runCommand(SocketClient *c, int argc, char ** argv);
     };
 
+    class StorageCmd : public VoldCommand {
+    public:
+        StorageCmd();
+        virtual ~StorageCmd() {}
+        int runCommand(SocketClient *c, int argc, char ** argv);
+    };
+
     class XwarpCmd : public VoldCommand {
     public:
         XwarpCmd();
         virtual ~XwarpCmd() {}
+        int runCommand(SocketClient *c, int argc, char ** argv);
+    };
+
+    class CryptfsCmd : public VoldCommand {
+    public:
+        CryptfsCmd();
+        virtual ~CryptfsCmd() {}
         int runCommand(SocketClient *c, int argc, char ** argv);
     };
 
@@ -86,7 +85,6 @@ private:
         virtual ~FstrimCmd() {}
         int runCommand(SocketClient *c, int argc, char ** argv);
     };
-#endif
 };
 
 #endif

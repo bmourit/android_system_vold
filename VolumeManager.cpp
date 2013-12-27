@@ -81,14 +81,14 @@ VolumeManager::VolumeManager() {
     mVolManagerDisabled = 0;
 
     // set dirty ratio to ro.vold.umsdirtyratio (default 0) when UMS is active
-//    char dirtyratio[PROPERTY_VALUE_MAX];
-//    property_get("ro.vold.umsdirtyratio", dirtyratio, "0");
-//    mUmsDirtyRatio = atoi(dirtyratio);
+    char dirtyratio[PROPERTY_VALUE_MAX];
+    property_get("ro.vold.umsdirtyratio", dirtyratio, "0");
+    mUmsDirtyRatio = atoi(dirtyratio);
 
 #ifdef ACT_HARDWARE
     mSavedDirtyExpire = -1;
     mSavedDirtyWriteback = -1;
-    mUmsDirtyRatio = 5;
+    //mUmsDirtyRatio = 5; //let's use the tunable prop setting above
     mUmsDirtyExpire = 1;
     mUmsDirtyWriteback = 20;
     mFilterKdev = -1;
@@ -1070,7 +1070,7 @@ int VolumeManager::mountAsec(const char *id, const char *key, int ownerUid) {
 
     int written = snprintf(mountPoint, sizeof(mountPoint), "%s/%s", Volume::ASECDIR, id);
     if ((written < 0) || (size_t(written) >= sizeof(mountPoint))) {
-        SLOGE("ASEC mount failed: couldn't construct mountpoint %s", id);
+        SLOGE("ASEC mount failed: couldn't construct mountpoint", id);
         return -1;
     }
 
@@ -1217,7 +1217,7 @@ int VolumeManager::mountObb(const char *img, const char *key, int ownerGid) {
 
     int written = snprintf(mountPoint, sizeof(mountPoint), "%s/%s", Volume::LOOPDIR, idHash);
     if ((written < 0) || (size_t(written) >= sizeof(mountPoint))) {
-        SLOGE("OBB mount failed: couldn't construct mountpoint %s", img);
+        SLOGE("OBB mount failed: couldn't construct mountpoint", img);
         return -1;
     }
 
@@ -1438,17 +1438,6 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
         return -1;
     }
 
-#ifdef VOLD_EMMC_SHARES_DEV_MAJOR
-    // If emmc and sdcard share dev major number, vold may pick
-    // incorrectly based on partition nodes alone. Use device nodes instead.
-    v->getDeviceNodes((dev_t *) &d, 1);
-    if ((MAJOR(d) == 0) && (MINOR(d) == 0)) {
-        // This volume does not support raw disk access
-        errno = EINVAL;
-        return -1;
-    }
-#endif
-
     int fd;
     char nodepath[255];
     int written = snprintf(nodepath,
@@ -1470,10 +1459,11 @@ int VolumeManager::shareVolume(const char *label, const char *method) {
         lun_number = 1;
     }
     if ((fd = openLun(lun_number)) < 0) {
+        SLOGE("Unable to open ums lunfile (%s)", strerror(errno));
 #else
     if ((fd = open(MASS_STORAGE_FILE_PATH, O_WRONLY)) < 0) {
-#endif
         SLOGE("Unable to open ums lunfile (%s)", strerror(errno));
+#endif
         return -1;
     }
 
@@ -1889,33 +1879,53 @@ bool VolumeManager::isMountpointMounted(const char *mp)
 }
 
 int VolumeManager::cleanupAsec(Volume *v, bool force) {
+    // Only primary storage needs ASEC cleanup
 #ifdef ACT_HARDWARE
-       /* Only primary storage needs ASEC cleanup. */
     if (!v->isPrimaryStorage())
         return 0;
 #endif
-    int rc = unmountAllAsecsInDir(Volume::SEC_ASECDIR_EXT);
+    int rc = 0;
 
-    AsecIdCollection toUnmount;
-    // Find the remaining OBB files that are on external storage.
+    char asecFileName[255];
+
+    AsecIdCollection removeAsec;
+    AsecIdCollection removeObb;
     for (AsecIdCollection::iterator it = mActiveContainers->begin(); it != mActiveContainers->end();
             ++it) {
         ContainerData* cd = *it;
 
         if (cd->type == ASEC) {
-            // nothing
+            if (findAsec(cd->id, asecFileName, sizeof(asecFileName))) {
+                SLOGE("Couldn't find ASEC %s; cleaning up", cd->id);
+                removeAsec.push_back(cd);
+            } else {
+                SLOGD("Found ASEC at path %s", asecFileName);
+                if (!strncmp(asecFileName, Volume::SEC_ASECDIR_EXT,
+                        strlen(Volume::SEC_ASECDIR_EXT))) {
+                    removeAsec.push_back(cd);
+                }
+            }
         } else if (cd->type == OBB) {
             if (v == getVolumeForFile(cd->id)) {
-                toUnmount.push_back(cd);
+                removeObb.push_back(cd);
             }
         } else {
             SLOGE("Unknown container type %d!", cd->type);
         }
     }
 
-    for (AsecIdCollection::iterator it = toUnmount.begin(); it != toUnmount.end(); ++it) {
+    for (AsecIdCollection::iterator it = removeAsec.begin(); it != removeAsec.end(); ++it) {
         ContainerData *cd = *it;
-        SLOGI("Unmounting ASEC %s (dependant on %s)", cd->id, v->getFuseMountpoint());
+        SLOGI("Unmounting ASEC %s (dependent on %s)", cd->id, v->getLabel());
+        if (unmountAsec(cd->id, force)) {
+            SLOGE("Failed to unmount ASEC %s (%s)", cd->id, strerror(errno));
+            rc = -1;
+        }
+    }
+
+    for (AsecIdCollection::iterator it = removeObb.begin(); it != removeObb.end(); ++it) {
+        ContainerData *cd = *it;
+        SLOGI("Unmounting OBB %s (dependent on %s)", cd->id, v->getLabel());
         if (unmountObb(cd->id, force)) {
             SLOGE("Failed to unmount OBB %s (%s)", cd->id, strerror(errno));
             rc = -1;
@@ -1928,9 +1938,12 @@ int VolumeManager::cleanupAsec(Volume *v, bool force) {
 int VolumeManager::mkdirs(char* path) {
     // Require that path lives under a volume we manage
     const char* emulated_source = getenv("EMULATED_STORAGE_SOURCE");
+    const char* external_storage = getenv("EXTERNAL_STORAGE");
     const char* root = NULL;
     if (emulated_source && !strncmp(path, emulated_source, strlen(emulated_source))) {
         root = emulated_source;
+    } else if (external_storage && !strncmp(path, external_storage, strlen(external_storage))){
+        root = external_storage;
     } else {
         Volume* vol = getVolumeForFile(path);
         if (vol) {

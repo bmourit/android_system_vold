@@ -49,9 +49,9 @@
 #include "Fat.h"
 #include "VoldUtil.h"
 
-static char FSCK_MSDOS_PATH[] = HELPER_PATH "fsck_msdos";
-static char MKDOSFS_PATH[] = HELPER_PATH "newfs_msdos";
-static char DOSFSLABEL_PATH[] = HELPER_PATH "dosfslabel";
+static char FSCK_MSDOS_PATH[] = "/system/bin/fsck_msdos";
+static char MKDOSFS_PATH[] = "/system/bin/newfs_msdos";
+static char DOSFSLABEL_PATH[] = "/system/bin/dosfslabel";
 extern "C" int mount(const char *, const char *, const char *, unsigned long, const void *);
 
 #ifdef ACT_HARDWARE

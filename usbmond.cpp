@@ -29,7 +29,7 @@
 #define USBMON_ERR(x...)    android_printLog(ANDROID_LOG_ERROR, "usbmond", x)
 #define USBMON_DBG(x...)    android_printLog(ANDROID_LOG_DEBUG, "usbmond", x)
 
-#define SOCKET_BUF_SIZE  (64*1024)
+#define SOCKET_BUF_SIZE  (128*1024)
 #define UEVENT_MSG_LEN  1024
 
 #define ANDROID_USB_PATH  "/sys/class/android_usb/android0"
@@ -43,7 +43,7 @@
 #define USB_MODESWITCH_RETRY_COUNT    5
 
 static char save_buffer[4096];
-static char inquiry_string[32];
+static char inquiry_string[128];
 
 static const char *android_item[] = {
     "idProduct",
@@ -465,7 +465,7 @@ static void process_uhost_uevent(struct uevent *uevent)
 
 int prase_usb_config( void )
 {
-  char prop_value[32];
+  char prop_value[PROPERTY_VALUE_MAX];
   char target_string[4]="adb";
   
   property_get("sys.usb.config", prop_value, "adb");
@@ -820,7 +820,7 @@ int usbmond_main(void) {
     write(filehandle, &enable, 1);
     close(filehandle);
     
-    property_get("ro.usb.descriptor", inquiry_string, "google,google,4.10");    
+    property_get("ro.usb.descriptor", inquiry_string, "google,google,4.4");    
     android_printLog(ANDROID_LOG_DEBUG,"usbmod","INQUIRY_STRING %s",inquiry_string);
     //printf("property_get :%s\n",inquiry_string);
     android_state_save(); 

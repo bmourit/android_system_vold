@@ -31,7 +31,7 @@
 #include "ResponseCode.h"
 #include "cryptfs.h"
 
-#define PARTITION_DEBUG
+//#define PARTITION_DEBUG
 
 DirectVolume::DirectVolume(VolumeManager *vm, const fstab_rec* rec, int flags) :
         Volume(vm, rec, flags) {
@@ -50,16 +50,10 @@ DirectVolume::DirectVolume(VolumeManager *vm, const fstab_rec* rec, int flags) :
 
     char mount[PATH_MAX];
 
-#ifdef MINIVOLD
-    // In recovery, directly mount to /storage/* since we have no fuse daemon
-    snprintf(mount, PATH_MAX, "%s/%s", Volume::FUSE_DIR, rec->label);
-    mMountpoint = mFuseMountpoint = strdup(mount);
-#else
     snprintf(mount, PATH_MAX, "%s/%s", Volume::MEDIA_DIR, rec->label);
     mMountpoint = strdup(mount);
     snprintf(mount, PATH_MAX, "%s/%s", Volume::FUSE_DIR, rec->label);
     mFuseMountpoint = strdup(mount);
-#endif
 
     setState(Volume::State_NoMedia);
 }
@@ -157,7 +151,7 @@ int DirectVolume::handleBlockEvent(NetlinkEvent *evt) {
                 } else {
                     handlePartitionAdded(dp, evt);
                 }
-                /* Send notification if disk is ready (ie all partitions found) */
+                /* Send notification iff disk is ready (ie all partitions found) */
                 if (getState() == Volume::State_Idle) {
                     char msg[255];
 
@@ -256,13 +250,14 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
     SLOGD("DirectVolume::handlePartitionAdded -> MAJOR %d, MINOR %d, PARTN %d\n", major, minor, part_num);
 
     if (part_num > MAX_PARTITIONS || part_num < 1) {
-        SLOGE("Invalid 'PARTN' value");
+        SLOGE("Invalid 'PARTN' value. Override MAX_PARTITIONS to use more than %d partitions", MAX_PARTITIONS-1);
         return;
     }
 
-    //if (part_num > mDiskNumParts) {
-        //mDiskNumParts = part_num;
-
+#ifndef ACT_HARDWARE
+    if (part_num > mDiskNumParts) {
+        mDiskNumParts = part_num;
+#else
     if ((mDiskNumParts == 0) && (mDiskMajor == -1)) {
         SLOGD("add partition without add disk mDiskNumParts <- %d",mDiskNumParts);
         mDiskNumParts = 1;		
@@ -287,6 +282,7 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
                 break;
             }
         }
+#endif
     }
 
     if (major != mDiskMajor) {
@@ -303,8 +299,8 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
 #ifdef PARTITION_DEBUG
     SLOGD("Dv:partAdd: part_num = %d, minor = %d\n", part_num, minor);
 #endif
-    if (part_num > MAX_PARTITIONS) {
-        SLOGE("Dv:partAdd: ignoring part_num = %d (max: %d)\n", part_num, MAX_PARTITIONS);
+    if (part_num >= MAX_PARTITIONS) {
+        SLOGE("Dv:partAdd: ignoring part_num = %d (max: %d) Override MAX_PARTITIONS to use these partitions\n", part_num, MAX_PARTITIONS-1);
     } else {
         mPartMinors[part_num -1] = minor;
     }
@@ -316,9 +312,11 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
 #endif
         if (getState() != Volume::State_Formatting) {
             setState(Volume::State_Idle);
-            //if (mRetryMount == true) {
-                //mRetryMount = false;
-                //mountVol();
+#ifndef ACT_HARDWARE
+            if (mRetryMount == true) {
+                mRetryMount = false;
+                mountVol();
+#else
         /* if ums enabled, share volume */
         if (mVm->getUmsSharingCount() > 0) {
             mVm->shareVolume(getLabel(), "ums");
@@ -328,6 +326,7 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
                      getLabel(), getMountpoint(), mDiskMajor, mDiskMinor);
             mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeDiskInserted,
                                                      msg, false);
+#endif
             }
         }
     } else {
@@ -386,6 +385,7 @@ void DirectVolume::handleDiskRemoved(const char *devpath, NetlinkEvent *evt) {
         mVm->unshareVolume(getLabel(), "ums");
     }
 
+#ifdef ACT_HARDWARE
     /* if partition exist, umount volume in handlePartitionRemoved() */
     int state = getState();
     if (mDiskNumParts > 0) {
@@ -404,15 +404,17 @@ void DirectVolume::handleDiskRemoved(const char *devpath, NetlinkEvent *evt) {
     }
     if ((dev_t) MKDEV(major, minor) == mCurrentlyMountedKdev) {
     //SLOGD("Volume %s %s disk %d:%d removed\n", getLabel(), getMountpoint(), major, minor);
+#else
+    SLOGD("Volume %s %s disk %d:%d removed\n", getLabel(), getMountpoint(), major, minor);
+#endif
     snprintf(msg, sizeof(msg), "Volume %s %s disk removed (%d:%d)",
              getLabel(), getFuseMountpoint(), major, minor);
     mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeDiskRemoved,
                                              msg, false);
-
+#ifdef ACT_HARDWARE
         if (mVm->cleanupAsec(this, true)) {
             SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
         }
-
         if (Volume::unmountVol(true, false)) {
             SLOGE("Failed to unmount volume on bad removal (%s)",
                  strerror(errno));
@@ -429,7 +431,7 @@ void DirectVolume::handleDiskRemoved(const char *devpath, NetlinkEvent *evt) {
             SLOGD("Crisis averted");
         }
     }
-
+#endif
     setState(Volume::State_NoMedia);
 }
 
@@ -457,14 +459,15 @@ void DirectVolume::handlePartitionRemoved(const char *devpath, NetlinkEvent *evt
          * Yikes, our mounted partition is going away!
          */
 
+        bool providesAsec = (getFlags() & VOL_PROVIDES_ASEC) != 0;
+        if (providesAsec && mVm->cleanupAsec(this, true)) {
+            SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
+        }
+
         snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
                  getLabel(), getFuseMountpoint(), major, minor);
         mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
                                              msg, false);
-
-	if (mVm->cleanupAsec(this, true)) {
-            SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
-        }
 
         if (Volume::unmountVol(true, false)) {
             SLOGE("Failed to unmount volume on bad removal (%s)", 
