@@ -11,6 +11,8 @@ common_src_files := \
 	Process.cpp \
 	Ext4.cpp \
 	Fat.cpp \
+	Ntfs.cpp \
+	Exfat.cpp \
 	Loop.cpp \
 	Devmapper.cpp \
 	ResponseCode.cpp \
@@ -40,7 +42,8 @@ common_shared_libraries := \
 	liblogwrap \
 	libext4_utils \
 	libcrypto \
-	libext2_blkid
+	libext2_blkid \
+	libicuuc \
 
 common_static_libraries := \
 	libfs_mgr \
@@ -49,17 +52,6 @@ common_static_libraries := \
 
 include $(CLEAR_VARS)
 
-ifeq ($(BOARD_VOLD_EMMC_SHARES_DEV_MAJOR), true)
-LOCAL_CFLAGS += -DVOLD_EMMC_SHARES_DEV_MAJOR
-endif
-
-ifeq ($(BOARD_VOLD_DISC_HAS_MULTIPLE_MAJORS), true)
-LOCAL_CFLAGS += -DVOLD_DISC_HAS_MULTIPLE_MAJORS
-endif
-
-ifneq ($(BOARD_VOLD_MAX_PARTITIONS),)
-LOCAL_CFLAGS += -DVOLD_MAX_PARTITIONS=$(BOARD_VOLD_MAX_PARTITIONS)
-endif
 LOCAL_MODULE := libvold
 LOCAL_SRC_FILES := $(common_src_files)
 LOCAL_C_INCLUDES := $(common_c_includes)
@@ -75,17 +67,6 @@ LOCAL_SRC_FILES := \
 	$(common_src_files)
 LOCAL_C_INCLUDES := $(common_c_includes)
 LOCAL_CFLAGS := -Werror=format
-ifeq ($(BOARD_VOLD_DISC_HAS_MULTIPLE_MAJORS), true)
-LOCAL_CFLAGS += -DVOLD_DISC_HAS_MULTIPLE_MAJORS
-endif
-
-ifeq ($(BOARD_VOLD_EMMC_SHARES_DEV_MAJOR), true)
-LOCAL_CFLAGS += -DVOLD_EMMC_SHARES_DEV_MAJOR
-endif
-
-ifneq ($(BOARD_VOLD_MAX_PARTITIONS),)
-LOCAL_CFLAGS += -DVOLD_MAX_PARTITIONS=$(BOARD_VOLD_MAX_PARTITIONS)
-endif
 
 LOCAL_SHARED_LIBRARIES := $(common_shared_libraries)
 LOCAL_STATIC_LIBRARIES := $(common_static_libraries)

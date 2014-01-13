@@ -77,14 +77,6 @@ dev_t DirectVolume::getDiskDevice() {
 
 dev_t DirectVolume::getShareDevice() {
     if (mPartIdx != -1) {
-#ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
-        int major = getMajorNumberForBadPartition(mPartIdx);
-        if(major != -1) {
-            SLOGE("getShareDevice() returning correct major: %d, minor: %d", major, mPartMinors[mPartIdx - 1]);
-            return MKDEV(major, mPartMinors[mPartIdx - 1]);
-        }
-        else
-#endif
         return MKDEV(mDiskMajor, mPartIdx);
     } else {
         return MKDEV(mDiskMajor, mDiskMinor);
@@ -189,14 +181,13 @@ void DirectVolume::handleDiskAdded(const char *devpath, NetlinkEvent *evt) {
     mDiskMinor = atoi(evt->findParam("MINOR"));
 
     const char *tmp = evt->findParam("NPARTS");
+    const char *name = evt->findParam("DEVNAME");
     if (tmp) {
         mDiskNumParts = atoi(tmp);
     } else {
         SLOGW("Kernel block uevent missing 'NPARTS'");
         mDiskNumParts = 1;
     }
-    SLOGD("handleDiskAdded mDiskNumParts <- %d",mDiskNumParts);
-    char msg[255];
 
     int partmask = 0;
     int i;
@@ -210,17 +201,19 @@ void DirectVolume::handleDiskAdded(const char *devpath, NetlinkEvent *evt) {
         SLOGD("Dv::diskIns - No partitions - good to go son!");
 #endif
         setState(Volume::State_Idle);
-
+#ifdef ACT_HARDWARE
+        char msg[255];
         /* if ums enabled, share volume */
         if (mVm->getUmsSharingCount() > 0) {
             mVm->shareVolume(getLabel(), "ums");
         } else {
             /* send msg: disk inserted */
             snprintf(msg, sizeof(msg), "Volume %s %s disk inserted (%d:%d)",
-                     getLabel(), getMountpoint(), mDiskMajor, mDiskMinor);
+                     getLabel(), getFuseMountpoint(), mDiskMajor, mDiskMinor);
             mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeDiskInserted,
                                                      msg, false);        
         }
+#endif
     } else {
 #ifdef PARTITION_DEBUG
         SLOGD("Dv::diskIns - waiting for %d partitions (mask 0x%x)",
@@ -247,10 +240,8 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
         part_num = 1;
     }
 
-    SLOGD("DirectVolume::handlePartitionAdded -> MAJOR %d, MINOR %d, PARTN %d\n", major, minor, part_num);
-
     if (part_num > MAX_PARTITIONS || part_num < 1) {
-        SLOGE("Invalid 'PARTN' value. Override MAX_PARTITIONS to use more than %d partitions", MAX_PARTITIONS-1);
+        SLOGE("Invalid 'PARTN' value");
         return;
     }
 
@@ -287,20 +278,13 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
 
     if (major != mDiskMajor) {
         SLOGE("Partition '%s' has a different major than its disk!", devpath);
-#ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
-        ValuePair vp;
-        vp.major = major;
-        vp.part_num = part_num;
-        badPartitions.push_back(vp);
-#else
         return;
-#endif
     }
 #ifdef PARTITION_DEBUG
     SLOGD("Dv:partAdd: part_num = %d, minor = %d\n", part_num, minor);
 #endif
     if (part_num >= MAX_PARTITIONS) {
-        SLOGE("Dv:partAdd: ignoring part_num = %d (max: %d) Override MAX_PARTITIONS to use these partitions\n", part_num, MAX_PARTITIONS-1);
+        SLOGE("Dv:partAdd: ignoring part_num = %d (max: %d)\n", part_num, MAX_PARTITIONS);
     } else {
         mPartMinors[part_num -1] = minor;
     }
@@ -323,7 +307,7 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
         } else {
             /* send msg: disk inserted */
             snprintf(msg, sizeof(msg), "Volume %s %s disk inserted (%d:%d)",
-                     getLabel(), getMountpoint(), mDiskMajor, mDiskMinor);
+                     getLabel(), getFuseMountpoint(), mDiskMajor, mDiskMinor);
             mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeDiskInserted,
                                                      msg, false);
 #endif
@@ -339,7 +323,7 @@ void DirectVolume::handlePartitionAdded(const char *devpath, NetlinkEvent *evt) 
 void DirectVolume::handleDiskChanged(const char *devpath, NetlinkEvent *evt) {
     int major = atoi(evt->findParam("MAJOR"));
     int minor = atoi(evt->findParam("MINOR"));
-
+    SLOGD("handleDiskChanged %d:%d",major,minor);
     if ((major != mDiskMajor) || (minor != mDiskMinor)) {
         return;
     }
@@ -352,6 +336,7 @@ void DirectVolume::handleDiskChanged(const char *devpath, NetlinkEvent *evt) {
         SLOGW("Kernel block uevent missing 'NPARTS'");
         mDiskNumParts = 1;
     }
+	SLOGD("handleDiskChanged mDiskNumParts <- %d",mDiskNumParts);
 
     int partmask = 0;
     int i;
@@ -378,6 +363,7 @@ void DirectVolume::handlePartitionChanged(const char *devpath, NetlinkEvent *evt
 void DirectVolume::handleDiskRemoved(const char *devpath, NetlinkEvent *evt) {
     int major = atoi(evt->findParam("MAJOR"));
     int minor = atoi(evt->findParam("MINOR"));
+	SLOGD("handleDiskRemoved %d:%d",major,minor);
     char msg[255];
     bool enabled;
 
@@ -403,14 +389,18 @@ void DirectVolume::handleDiskRemoved(const char *devpath, NetlinkEvent *evt) {
         return;
     }
     if ((dev_t) MKDEV(major, minor) == mCurrentlyMountedKdev) {
-    //SLOGD("Volume %s %s disk %d:%d removed\n", getLabel(), getMountpoint(), major, minor);
+        snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
+                 getLabel(), getFuseMountpoint(), major, minor);
+        mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
+                                             msg, false);
 #else
     SLOGD("Volume %s %s disk %d:%d removed\n", getLabel(), getMountpoint(), major, minor);
-#endif
     snprintf(msg, sizeof(msg), "Volume %s %s disk removed (%d:%d)",
              getLabel(), getFuseMountpoint(), major, minor);
     mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeDiskRemoved,
                                              msg, false);
+#endif
+
 #ifdef ACT_HARDWARE
         if (mVm->cleanupAsec(this, true)) {
             SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
@@ -459,6 +449,16 @@ void DirectVolume::handlePartitionRemoved(const char *devpath, NetlinkEvent *evt
          * Yikes, our mounted partition is going away!
          */
 
+#ifdef ACT_HARDWARE
+        snprintf(msg, sizeof(msg), "Volume %s %s bad removal (%d:%d)",
+                 getLabel(), getFuseMountpoint(), major, minor);
+        mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
+                                             msg, false);
+
+	if (mVm->cleanupAsec(this, true)) {
+            SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
+        }
+#else
         bool providesAsec = (getFlags() & VOL_PROVIDES_ASEC) != 0;
         if (providesAsec && mVm->cleanupAsec(this, true)) {
             SLOGE("Failed to cleanup ASEC - unmount will probably fail!");
@@ -468,6 +468,7 @@ void DirectVolume::handlePartitionRemoved(const char *devpath, NetlinkEvent *evt
                  getLabel(), getFuseMountpoint(), major, minor);
         mVm->getBroadcaster()->sendBroadcast(ResponseCode::VolumeBadRemoval,
                                              msg, false);
+#endif
 
         if (Volume::unmountVol(true, false)) {
             SLOGE("Failed to unmount volume on bad removal (%s)", 
@@ -509,52 +510,13 @@ int DirectVolume::getDeviceNodes(dev_t *devs, int max) {
         for (i = 0; i < mDiskNumParts; i++) {
             if (i == max)
                 break;
-#ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
-            int major = getMajorNumberForBadPartition(i + 1);
-            if(major != -1) {
-                SLOGE("Fixing major number from %d to %d for partition %d", mDiskMajor, major, i + 1);
-                devs[i] = MKDEV(major, mPartMinors[i]);
-            }
-            else
-#endif
             devs[i] = MKDEV(mDiskMajor, mPartMinors[i]);
         }
         return mDiskNumParts;
     }
-#ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
-    int major = getMajorNumberForBadPartition(mPartIdx);
-    if(major != -1) {
-        SLOGE("Fixing major number from %d to %d for partition %d", mDiskMajor, major, mPartIdx);
-        devs[0] = MKDEV(major, mPartMinors[mPartIdx - 1]);
-    }
-    else
-#endif
     devs[0] = MKDEV(mDiskMajor, mPartMinors[mPartIdx -1]);
     return 1;
 }
-
-#ifdef VOLD_DISC_HAS_MULTIPLE_MAJORS
-/*
- * Returns the correct major number for a bad partition.
- * Returns -1 if the partition is good.
- */
-int DirectVolume::getMajorNumberForBadPartition(int part_num) {
-    SLOGD("Checking for bad partition major number");
-    bool found = false;
-    android::List<ValuePair>::iterator iterator = badPartitions.begin();
-    for(;iterator != badPartitions.end(); iterator++) {
-        if((*iterator).part_num == part_num) {
-            found = true;
-            SLOGD("Found bad partition");
-            break;
-        }
-    }
-    if(found == true)
-        return (*iterator).major;
-    else
-        return -1;
-}
-#endif
 
 /*
  * Called from base to update device info,

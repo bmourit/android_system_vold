@@ -28,6 +28,7 @@
 #include <sys/param.h>
 
 #include <linux/kdev_t.h>
+#include <linux/fs.h>
 
 #include <cutils/properties.h>
 
@@ -47,8 +48,9 @@
 #include "Volume.h"
 #include "VolumeManager.h"
 #include "ResponseCode.h"
-#include "Ext4.h"
 #include "Fat.h"
+#include "Ntfs.h"
+#include "Exfat.h"
 #include "Process.h"
 #include "cryptfs.h"
 
@@ -153,6 +155,25 @@ Volume::~Volume() {
     free(mUserLabel);
 }
 
+/*void Volume::protectFromAutorunStupidity() {
+    char filename[255];
+
+    snprintf(filename, sizeof(filename), "%s/autorun.inf", FUSE_DIR);
+    if (!access(filename, F_OK)) {
+        SLOGW("Volume contains an autorun.inf! - removing");*/
+        /*
+         * Ensure the filename is all lower-case so
+         * the process killer can find the inode.
+         * Probably being paranoid here but meh.
+         */
+        /*rename(filename, filename);
+        Process::killProcessesWithOpenFiles(filename, 2);
+        if (unlink(filename)) {
+            SLOGE("Failed to remove %s (%s)", filename, strerror(errno));
+        }
+    }
+}*/
+
 void Volume::setDebug(bool enable) {
     mDebug = enable;
 }
@@ -195,12 +216,12 @@ int Volume::handleBlockEvent(NetlinkEvent *evt) {
 #ifdef ACT_HARDWARE
 bool Volume::isPrimaryStorage() {
     const char* externalStorage = getenv("EXTERNAL_STORAGE") ? : "/storage/sdcard0";
-    return !strcmp(getMountpoint(), externalStorage);
+    return !strcmp(getFuseMountpoint(), externalStorage);
 }
 
 bool Volume::isAsecStorage() {
     const char* asecStorage = getenv("ASEC_STORAGE") ? : "/storage/sdcard0";
-    return !strcmp(getMountpoint(), asecStorage);
+    return !strcmp(getFuseMountpoint(), asecStorage);
 }
 #endif
 
@@ -326,15 +347,6 @@ int Volume::formatVol(bool wipe) {
     sprintf(devicePath, "/dev/block/vold/%d:%d",
             MAJOR(partNode), MINOR(partNode));
 
-#ifdef VOLD_EMMC_SHARES_DEV_MAJOR
-    // If emmc and sdcard share dev major number, vold may pick
-    // incorrectly based on partition nodes alone, formatting
-    // the wrong device. Use device nodes instead.
-    dev_t deviceNodes;
-    getDeviceNodes((dev_t *) &deviceNodes, 1);
-    sprintf(devicePath, "/dev/block/vold/%d:%d", MAJOR(deviceNodes), MINOR(deviceNodes));
-#endif
-
     if (mDebug) {
         SLOGI("Formatting volume %s (%s)", getLabel(), devicePath);
     }
@@ -344,7 +356,7 @@ int Volume::formatVol(bool wipe) {
         goto err;
     }
 
-    /* clear label flag to format the primary storage*/
+    /* clear label flag if formating the primary storage*/
     if (primaryStorage) {
         property_set("persist.vold.set_label_done", "0");
     }
@@ -375,7 +387,6 @@ bool Volume::isMountpointMounted(const char *path) {
             fclose(fp);
             return true;
         }
-
     }
 
     fclose(fp);
@@ -393,12 +404,12 @@ int Volume::mountVol() {
 
     int flags = getFlags();
 
-#ifdef ACT_HARDWARE
-    bool primaryStorage = isPrimaryStorage();
-    bool asecStorage = isAsecStorage();
-#endif
+//#ifdef ACT_HARDWARE
+    //bool primaryStorage = isPrimaryStorage();
+    //bool providesAsec = isAsecStorage();
+//#else
     bool providesAsec = (flags & VOL_PROVIDES_ASEC) != 0;
-
+//#endif
     // TODO: handle "bind" style mounts, for emulated storage
 
     char decrypt_state[PROPERTY_VALUE_MAX];
@@ -511,46 +522,84 @@ int Volume::mountVol() {
         errno = 0;
         setState(Volume::State_Checking);
 
+        /*
+         * Mount the device on our internal staging mountpoint so we can
+         * muck with it before exposing it to non priviledged users.
+         */
         errno = 0;
         int gid;
+
+        /*if (primaryStorage) {
+            // Special case the primary SD card.
+            // For this we grant write access to the SDCARD_RW group.
+            uid = AID_ROOT;
+            gid = AID_SDCARD_RW;
+            perm_mask = 0002;
+        } else {
+            // For secondary external storage we keep things locked up.
+            uid = AID_SYSTEM;
+            gid = AID_SDCARD_RW;
+	    perm_mask = 0002;
+        }*/
 
         fstype = getFsType((const char *)devicePath);
 
         if (fstype != NULL) {
             if (strcmp(fstype, "vfat") == 0) {
+        if (Fat::check(devicePath)) {
+            errno = EIO;
+            /* Badness - abort the mount */
+            SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
+            setState(Volume::State_Idle);
+            free(fstype);
+            return -1;
+        }
 
-                if (Fat::check(devicePath)) {
-                    errno = EIO;
-                    /* Badness - abort the mount */
-                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
-                    setState(Volume::State_Idle);
-                    free(fstype);
-                    return -1;
+        errno = 0;
+
+        if (Fat::doMount(devicePath, getMountpoint(), false, false, false,
+                AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
+            SLOGE("%s failed to mount via VFAT (%s)\n", devicePath, strerror(errno));
+            continue;
+        }
+
+            /* primary storage: only set volume label once */
+            if (providesAsec) {
+                char value[PROPERTY_VALUE_MAX];
+                property_get("persist.vold.set_label_done", value, "0");
+                if (value[0] == '0') {
+                    /* get label string */
+                    property_get("ro.usbdevice.volumelabel", value, "");
+
+                    /* set Fat volume label */
+                    if (Fat::setLabel(devicePath, value)) {
+                        SLOGE("%s failed to set label via VFAT (%s)\n", devicePath, strerror(errno));
+                        /* retry set Fat volume label */
+                        if (Fat::setLabel(devicePath, value)) {
+                            SLOGE("retry: %s failed to set label via VFAT (%s)\n", devicePath, strerror(errno));
+                        } else {
+                            /* set label flag if success*/
+                            property_set("persist.vold.set_label_done", "1");
+                        }
+                    } else {
+                        /* set label flag if success*/
+                        property_set("persist.vold.set_label_done", "1");
+                    }
                 }
+            }
+        } else if (strcmp(fstype, "ntfs") == 0) {
+            if (Ntfs::doMount(devicePath, getMountpoint(), false, false, false,
+                    AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
+                SLOGE("%s failed to mount via NTFS (%s)\n", devicePath, strerror(errno));
+                continue;
+            }
 
-                errno = 0;
-
-                if (Fat::doMount(devicePath, getMountpoint(), false, false, false,
-                        AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
-                    SLOGE("%s failed to mount via VFAT (%s)\n", devicePath, strerror(errno));
-                    continue;
-                }
-
-            } else if (strcmp(fstype, "ext4") == 0) {
-                if (Ext4::check(devicePath)) {
-                    errno = EIO;
-                    /* Badness - abort the mount */
-                    SLOGE("%s failed FS checks (%s)", devicePath, strerror(errno));
-                    setState(Volume::State_Idle);
-                    free(fstype);
-                    return -1;
-                }
-
-                if (Ext4::doMount(devicePath, getMountpoint(), false, false, false, true)) {
-                    SLOGE("%s failed to mount via EXT4 (%s)\n", devicePath, strerror(errno));
-                    continue;
-                }
-
+        } else if (strcmp(fstype, "exfat") == 0) {
+            if (Exfat::doMount(devicePath, getMountpoint(), false, false, false,
+                    AID_MEDIA_RW, AID_MEDIA_RW, 0007, true)) {
+                SLOGE("%s failed to mount via EXFAT (%s)\n", devicePath, strerror(errno));
+                continue;
+            }
             } else {
                 errno = ENODATA;
                 // Unsupported filesystem
@@ -569,15 +618,17 @@ int Volume::mountVol() {
             return -1;
         }
 
+        //protectFromAutorunStupidity();
+
         extractMetadata(devicePath);
 
         if (providesAsec && mountAsecExternal() != 0) {
             SLOGE("Failed to mount secure area (%s)", strerror(errno));
-#ifndef ACT_HARDWARE
+//#ifndef ACT_HARDWARE
             umount(getMountpoint());
             setState(Volume::State_Idle);
             return -1;
-#endif /*ACT_HARDWARE*/
+//#endif /*ACT_HARDWARE*/
         }
 
         char service[64];
@@ -593,7 +644,7 @@ int Volume::mountVol() {
     }
 
 #ifdef ACT_HARDWARE
-    if(mRetry<3) {
+    if(mRetry < 3) {
 	dev_t d = getShareDevice();
 	if ((MAJOR(d) == 0) && (MINOR(d) == 0)) {
 	// This volume does not support raw disk access
@@ -684,11 +735,11 @@ int Volume::unmountVol(bool force, bool revert) {
     int i, rc;
 
     int flags = getFlags();
-#ifdef ACT_HARDWARE
-    bool providesAsec = isAsecStorage();
-#else
+//#ifdef ACT_HARDWARE
+//    bool providesAsec = isAsecStorage();
+//#else
     bool providesAsec = (flags & VOL_PROVIDES_ASEC) != 0;
-#endif
+//#endif
 
     if (getState() != Volume::State_Mounted) {
         SLOGE("Volume %s unmount request when not mounted", getLabel());

@@ -50,7 +50,6 @@ public:
     static const char *SEC_ASECDIR_INT;
     static const char *ASECDIR;
     static const char *LOOPDIR;
-    static const char *EXT4_FUSE_DIR;
     static const char *BLKID_PATH;
 
 protected:
@@ -119,6 +118,7 @@ private:
     int mountAsecExternal();
     int doUnmount(const char *path, bool force);
     int extractMetadata(const char* devicePath);
+    //void protectFromAutorunStupidity();
 };
 
 typedef android::List<Volume *> VolumeCollection;

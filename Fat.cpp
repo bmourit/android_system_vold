@@ -222,6 +222,11 @@ int Fat::check(const char *fsPath) {
             errno = EIO;
             return -1;
 
+        case 8:
+            SLOGW("We open the extension partition");
+            errno = ENODATA;
+            return -1;
+
         default:
             SLOGE("Filesystem check failed (unknown exit code %d)", status);
             errno = EIO;
@@ -324,7 +329,7 @@ int Fat::format(const char *fsPath, unsigned int numSectors, bool wipe) {
                 false, true);
     } else {
         args[9] = fsPath;
-        rc = android_fork_execvp(8, (char **)args, &status, false,
+        rc = android_fork_execvp(10, (char **)args, &status, false,
                 true);
     }
 
@@ -363,7 +368,7 @@ int Fat::setLabel(const char *fsPath, const char *label) {
 
 	// convert utf8 to ansi
 	utf8_lable = (char*)label;
-	codec_convert("UTF-8", "GBK", utf8_lable, strlen(utf8_lable)+1, 
+	codec_convert("UTF-8", "GBK", utf8_lable, strlen(utf8_lable)+1,
 	                ansi_label, sizeof(ansi_label));
 
 	args[0] = DOSFSLABEL_PATH;
@@ -372,28 +377,30 @@ int Fat::setLabel(const char *fsPath, const char *label) {
         rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status,
                 false, true);
 
+    status = rc;
+
     if (rc != 0) {
-        SLOGE("Filesystem format failed due to logwrap error");
-        errno = EIO;
-        return -1;
+    	SLOGE("Filesystem set label failed due to logwrap error");
+	errno = EIO;
+    	return -1;
     }
 
     if (!WIFEXITED(status)) {
-        SLOGE("Filesystem format did not exit properly");
-        errno = EIO;
-        return -1;
+	SLOGE("Set label did not exit properly");
+	errno = EIO;
+	return -1;
     }
 
     status = WEXITSTATUS(status);
 
-    if (status  == 0) {
-    	SLOGI("Filesystem set label OK");
-    	return 0;
+    if (status == 0) {
+	SLOGI("Filesystem has set label OK");
+        return 0;
     } else {
 	SLOGE("Set label failed (unknown exit code %d)", status);
 	errno = EIO;
 	return -1;
-	}
+    }
     return 0;
 }
 

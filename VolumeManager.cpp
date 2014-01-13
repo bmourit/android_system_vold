@@ -59,8 +59,6 @@
 #define CDROM_MAJOR  11
 #define SG_MAJOR  21
 #define SD_MAJOR  8
-#else
-#define MASS_STORAGE_FILE_PATH  "/sys/class/android_usb/android0/f_mass_storage/lun/file"
 #endif
 
 VolumeManager *VolumeManager::sInstance = NULL;
@@ -78,7 +76,6 @@ VolumeManager::VolumeManager() {
     mBroadcaster = NULL;
     mUmsSharingCount = 0;
     mSavedDirtyRatio = -1;
-    mVolManagerDisabled = 0;
 
     // set dirty ratio to ro.vold.umsdirtyratio (default 0) when UMS is active
     char dirtyratio[PROPERTY_VALUE_MAX];
@@ -99,6 +96,7 @@ VolumeManager::VolumeManager() {
     mSavedDirtyBytes=-1;
     mSavedDirtyBackgroundBytes=-1;
 #endif
+    mVolManagerDisabled = 0;
 }
 
 VolumeManager::~VolumeManager() {
@@ -1070,7 +1068,7 @@ int VolumeManager::mountAsec(const char *id, const char *key, int ownerUid) {
 
     int written = snprintf(mountPoint, sizeof(mountPoint), "%s/%s", Volume::ASECDIR, id);
     if ((written < 0) || (size_t(written) >= sizeof(mountPoint))) {
-        SLOGE("ASEC mount failed: couldn't construct mountpoint", id);
+        SLOGE("ASEC mount failed: couldn't construct mountpoint %s", id);
         return -1;
     }
 
@@ -1217,7 +1215,7 @@ int VolumeManager::mountObb(const char *img, const char *key, int ownerGid) {
 
     int written = snprintf(mountPoint, sizeof(mountPoint), "%s/%s", Volume::LOOPDIR, idHash);
     if ((written < 0) || (size_t(written) >= sizeof(mountPoint))) {
-        SLOGE("OBB mount failed: couldn't construct mountpoint", img);
+        SLOGE("OBB mount failed: couldn't construct mountpoint %s", img);
         return -1;
     }
 
@@ -1890,6 +1888,7 @@ int VolumeManager::cleanupAsec(Volume *v, bool force) {
 
     AsecIdCollection removeAsec;
     AsecIdCollection removeObb;
+
     for (AsecIdCollection::iterator it = mActiveContainers->begin(); it != mActiveContainers->end();
             ++it) {
         ContainerData* cd = *it;

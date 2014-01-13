@@ -1,5 +1,6 @@
 /*
- * Copyright (C) 2008 The Android Open Source Project
+ * Copyright (C) 2012 The Android Open Source Project
+ * Copyright (C) 2013 The CyanogenMod Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,75 +30,65 @@
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
+#include <sys/wait.h>
 
 #include <linux/kdev_t.h>
-#include <linux/fs.h>
 #include <logwrap/logwrap.h>
 #include "VoldUtil.h"
 
 #define LOG_TAG "Vold"
-
 #include <cutils/log.h>
 #include <cutils/properties.h>
 
-#include "Ntfs.h"
-#include "VoldUtil.h"
+#include "Exfat.h"
 
-#define NTFS_SUPER_MAGIC 0x5346544e
+extern "C" int mount(const char *, const char *, const char *, unsigned long, const void *);
 
-static char NTFS_FIX_PATH[] = "/system/bin/ntfsfix";
-static char NTFS_MOUNT_PATH[] = "/system/bin/ntfs-3g";
-static char MKNTFS_PATH[] = "/system/bin/newfs_ntfs";
+int Exfat::identify(const char *fsPath) {
+    int i, rc =-1, cnt = 0, fd = 0;
+	unsigned char *block = NULL;
 
-int Ntfs::check(const char *fsPath) {
-
-    if (access(NTFS_FIX_PATH, X_OK)) {
-        SLOGW("Skipping fs checks\n");
-        return 0;
+    if(!(block = (unsigned char *)malloc(512))){
+        goto out;
+    }
+    if((fd = open(fsPath, O_RDONLY)) < 0)
+    {
+        SLOGE("Unable to open device '%s' (%s)", fsPath, strerror(errno));
+        goto out;
+    }
+    if((cnt = read(fd, block, 512)) != 512)
+	{
+        SLOGE("Unable to read device partition table (%d, %s)", cnt, strerror(errno));
+        goto out;
     }
 
-    int rc = 0;
-    int status;
-    const char *args[4];
-    /* we first use -n to do ntfs detection */
-    args[0] = NTFS_FIX_PATH;
-    args[1] = "-n";
-    args[2] = fsPath;
-    args[3] = NULL;
+	if (memcmp(block+3, EXFAT_OEM_ID, 8)) {
+		SLOGI("exfat identify fail");
+		goto out;
+	}
+	SLOGI("Exfat System(%s) Identify success.", fsPath);
+	rc = 0;
 
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-    if (rc) {
-        errno = ENODATA;
-        return -1;
-    }
-
-    SLOGI("Ntfs filesystem existed");
-
-    /* do the real fix */
-    /* redo the ntfsfix without -n to fix problems */
-    args[1] = fsPath;
-    args[2] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-    if (rc) {
-        errno = EIO;
-        SLOGE("Filesystem check failed (unknown exit code %d)", rc);
-        return -1;
-    }
-
-    SLOGI("Ntfs filesystem check completed OK");
-    return 0;
+out:
+    if(block)
+	    free(block);
+	if(fd >= 0)
+		close(fd);
+    return rc;
 }
 
-int Ntfs::doMount(const char *fsPath, const char *mountPoint,
-                 bool ro, bool remount, bool executable,
+int Exfat::doMount(const char *fsPath, const char *mountPoint,
+                 bool ro, bool remount, bool executable, 
                  int ownerUid, int ownerGid, int permMask, bool createLost) {
     int rc;
+    unsigned long flags;
     char mountData[255];
-    const char *args[6];
-    int status;
+
+    flags = MS_NODEV | MS_NOSUID | MS_DIRSYNC | MS_NOATIME | MS_NODIRATIME;
+
+    flags |= (executable ? 0 : MS_NOEXEC);
+    flags |= (ro ? MS_RDONLY : 0);
+    flags |= (remount ? MS_REMOUNT : 0);
 
     /*
      * Note: This is a temporary hack. If the sampling profiler is enabled,
@@ -112,37 +103,17 @@ int Ntfs::doMount(const char *fsPath, const char *mountPoint,
             " 'persist.sampling_profiler' system property is set to '1'.");
         permMask = 0;
     }
-
+    /* FIXME force to world-writable */
     sprintf(mountData,
-            "utf8,uid=%d,gid=%d,fmask=%o,dmask=%o,"
-	    "shortname=mixed,nodev,nosuid,dirsync",
+            "uid=%d,gid=%d,fmask=%o,dmask=%o",
             ownerUid, ownerGid, permMask, permMask);
 
-    if (!executable)
-        strcat(mountData, ",noexec");
-    if (ro)
-        strcat(mountData, ",ro");
-    if (remount)
-        strcat(mountData, ",remount");
-
-    SLOGD("Mounting ntfs with options:%s\n", mountData);
-
-    args[0] = NTFS_MOUNT_PATH;
-    args[1] = "-o";
-    args[2] = mountData;
-    args[3] = fsPath;
-    args[4] = mountPoint;
-    args[5] = NULL;
-
-    rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
+    rc = mount(fsPath, mountPoint, "exfat", flags, mountData);
 
     if (rc && errno == EROFS) {
         SLOGE("%s appears to be a read only filesystem - retrying mount RO", fsPath);
-        strcat(mountData, ",ro");
-        rc = android_fork_execvp(ARRAY_SIZE(args), (char **)args, &status, false,
-            true);
-
+        flags |= MS_RDONLY;
+        rc = mount(fsPath, mountPoint, "exfat", flags, mountData);
     }
 
     if (rc == 0 && createLost) {
@@ -161,4 +132,9 @@ int Ntfs::doMount(const char *fsPath, const char *mountPoint,
     }
 
     return rc;
+}
+
+/* Don't Support Format */
+int Exfat::format(const char *fsPath, unsigned int numSectors) {
+    return -1;
 }
